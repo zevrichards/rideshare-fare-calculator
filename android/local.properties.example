@@ -1,0 +1,5 @@
+# Copy to local.properties (gitignored) and fill in.
+# Android Studio will also add its own sdk.dir line to this file -- leave
+# that as-is if present.
+
+GOOGLE_ROUTES_API_KEY=
