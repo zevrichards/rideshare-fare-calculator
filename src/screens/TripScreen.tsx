@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {AppState, Pressable, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
-import {calculateFare, GeoPoint} from '../lib/fare';
+import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
 import {estimateFareWithRouting} from '../lib/routing';
 import {RateCard, TTRS_RATE_CARD} from '../lib/rateCards';
 import {useTripTracking} from '../hooks/useTripTracking';
@@ -19,7 +19,31 @@ import {
   setPreferredNavApp,
   startOverlayTrip,
   stopOverlayTrip,
+  subscribeToTripCompleted,
 } from '../native/FareOverlay';
+
+const FARE_DISCLAIMER =
+  'Final cost may vary. Do not use this figure to charge passengers. Only rely on your rideshare app final figure.';
+
+function BreakdownLines({breakdown}: {breakdown: FareBreakdown}) {
+  return (
+    <View style={styles.breakdown}>
+      <Text style={styles.breakdownRow}>Base ${breakdown.base.toFixed(2)}</Text>
+      <Text style={styles.breakdownRow}>
+        Distance ${breakdown.distanceCharge.toFixed(2)}
+      </Text>
+      <Text style={styles.breakdownRow}>Time ${breakdown.timeCharge.toFixed(2)}</Text>
+      {breakdown.surgeMultiplier !== 1 && (
+        <Text style={styles.breakdownRow}>
+          Surge x{breakdown.surgeMultiplier.toFixed(1)}
+        </Text>
+      )}
+      {breakdown.minimumApplied && (
+        <Text style={styles.breakdownRow}>Minimum fare applied</Text>
+      )}
+    </View>
+  );
+}
 
 function getCurrentPosition(): Promise<GeoPoint> {
   return new Promise((resolve, reject) => {
@@ -39,6 +63,9 @@ export default function TripScreen() {
   const [destLat, setDestLat] = useState('');
   const [destLng, setDestLng] = useState('');
   const [estimatedTotal, setEstimatedTotal] = useState<number | null>(null);
+  const [estimatedBreakdown, setEstimatedBreakdown] = useState<FareBreakdown | null>(
+    null,
+  );
   const [estimatedSource, setEstimatedSource] = useState<
     'routing' | 'straight-line' | null
   >(null);
@@ -69,8 +96,20 @@ export default function TripScreen() {
       }
     });
 
+    // Stopping via the overlay's ✕ only stops the native side (service,
+    // notification, overlay view) -- it doesn't touch this screen's own
+    // useTripTracking hook, which has its own independent GPS watch. Without
+    // this, tapping the overlay body to bring the app to the foreground
+    // (see FareOverlayView's onTap) would show a "phantom" still-running
+    // trip. This only syncs isTracking/stops the watch -- it does not save
+    // history (removed; not needed, see git log).
+    const tripCompletedSubscription = subscribeToTripCompleted(() => {
+      tracking.stop();
+    });
+
     return () => {
       appStateSubscription.remove();
+      tripCompletedSubscription();
     };
   }, []);
 
@@ -93,6 +132,7 @@ export default function TripScreen() {
         surgeMultiplier,
       );
       setEstimatedTotal(estimate.total);
+      setEstimatedBreakdown(estimate.breakdown);
       setEstimatedSource(estimate.source);
       await tracking.start();
       if (isOverlaySupported) {
@@ -117,12 +157,13 @@ export default function TripScreen() {
     tracking.stop();
   };
 
-  const runningTotal = calculateFare(
+  const runningBreakdown = calculateFareBreakdown(
     activeRateCard,
     tracking.distanceKm,
     tracking.elapsedMinutes,
     surgeMultiplier,
   );
+  const runningTotal = runningBreakdown.total;
 
   if (showMapPicker) {
     return (
@@ -222,23 +263,28 @@ export default function TripScreen() {
             <Text style={styles.buttonText}>Start Trip</Text>
           </Pressable>
           {startError && <Text style={styles.error}>{startError}</Text>}
+          <Text style={styles.disclaimer}>{FARE_DISCLAIMER}</Text>
         </View>
       )}
 
       {tracking.isTracking && (
         <View style={styles.totals}>
-          {estimatedTotal !== null && (
+          <Text style={styles.disclaimer}>{FARE_DISCLAIMER}</Text>
+
+          {estimatedTotal !== null && estimatedBreakdown !== null && (
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>
                 Estimated Total
                 {estimatedSource === 'straight-line' ? ' (approx.)' : ''}
               </Text>
               <Text style={styles.totalValue}>${estimatedTotal.toFixed(2)}</Text>
+              <BreakdownLines breakdown={estimatedBreakdown} />
             </View>
           )}
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Running Total</Text>
             <Text style={styles.totalValueLarge}>${runningTotal.toFixed(2)}</Text>
+            <BreakdownLines breakdown={runningBreakdown} />
           </View>
           <Text style={styles.meta}>
             {tracking.distanceKm.toFixed(2)} km · {tracking.elapsedMinutes.toFixed(1)} min
@@ -360,6 +406,20 @@ const styles = StyleSheet.create({
   error: {
     color: '#d93025',
     marginTop: 8,
+  },
+  disclaimer: {
+    fontSize: 11,
+    color: '#888',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  breakdown: {
+    marginTop: 4,
+    alignItems: 'center',
+  },
+  breakdownRow: {
+    fontSize: 12,
+    color: '#777',
   },
   totals: {
     alignItems: 'center',

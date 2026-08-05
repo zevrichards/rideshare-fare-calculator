@@ -18,9 +18,15 @@ import kotlin.math.abs
  * top of whatever app is currently in the foreground. The stop button is a
  * distinct child view so it receives its own taps even while the card body
  * handles drag gestures (Android delivers touches to children before the
- * parent's OnTouchListener sees them).
+ * parent's OnTouchListener sees them). Tapping the card body itself (not the
+ * stop button, and not while dragging) invokes onTap, e.g. to bring the app
+ * to the foreground.
  */
-class FareOverlayView(private val context: Context, private val onStop: () -> Unit) {
+class FareOverlayView(
+    private val context: Context,
+    private val onTap: () -> Unit,
+    private val onStop: () -> Unit,
+) {
 
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -107,6 +113,7 @@ class FareOverlayView(private val context: Context, private val onStop: () -> Un
         var downRawY = 0f
         var downParamX = 0
         var downParamY = 0
+        var dragged = false
         val dragThresholdPx = context.resources.displayMetrics.density * 8
 
         rootView.setOnTouchListener { _, event ->
@@ -116,17 +123,25 @@ class FareOverlayView(private val context: Context, private val onStop: () -> Un
                     downRawY = event.rawY
                     downParamX = layoutParams.x
                     downParamY = layoutParams.y
+                    dragged = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downRawX
                     val dy = event.rawY - downRawY
                     if (abs(dx) > dragThresholdPx || abs(dy) > dragThresholdPx) {
+                        dragged = true
                         layoutParams.x = downParamX + dx.toInt()
                         layoutParams.y = downParamY + dy.toInt()
                         if (isAttached) {
                             windowManager.updateViewLayout(rootView, layoutParams)
                         }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!dragged) {
+                        onTap()
                     }
                     true
                 }

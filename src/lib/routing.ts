@@ -1,5 +1,10 @@
 import {GOOGLE_ROUTES_API_KEY} from '../config/apiKeys';
-import {calculateFare, estimateFare, GeoPoint} from './fare';
+import {
+  calculateFareBreakdown,
+  estimateFareBreakdown,
+  FareBreakdown,
+  GeoPoint,
+} from './fare';
 import {RateCard} from './rateCards';
 
 const COMPUTE_ROUTES_URL =
@@ -9,6 +14,7 @@ const REQUEST_TIMEOUT_MS = 8000;
 export interface FareEstimate {
   total: number;
   source: 'routing' | 'straight-line';
+  breakdown: FareBreakdown;
 }
 
 async function fetchRoadDistanceKm(
@@ -60,22 +66,16 @@ export async function estimateFareWithRouting(
   surgeMultiplier: number = 1,
 ): Promise<FareEstimate> {
   if (!GOOGLE_ROUTES_API_KEY) {
-    return {
-      total: estimateFare(rateCard, origin, destination, surgeMultiplier),
-      source: 'straight-line',
-    };
+    const breakdown = estimateFareBreakdown(rateCard, origin, destination, surgeMultiplier);
+    return {total: breakdown.total, source: 'straight-line', breakdown};
   }
 
   try {
     const roadDistanceKm = await fetchRoadDistanceKm(origin, destination);
-    return {
-      total: calculateFare(rateCard, roadDistanceKm, 0, surgeMultiplier),
-      source: 'routing',
-    };
+    const breakdown = calculateFareBreakdown(rateCard, roadDistanceKm, 0, surgeMultiplier);
+    return {total: breakdown.total, source: 'routing', breakdown};
   } catch {
-    return {
-      total: estimateFare(rateCard, origin, destination, surgeMultiplier),
-      source: 'straight-line',
-    };
+    const breakdown = estimateFareBreakdown(rateCard, origin, destination, surgeMultiplier);
+    return {total: breakdown.total, source: 'straight-line', breakdown};
   }
 }

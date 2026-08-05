@@ -1,4 +1,9 @@
-import {calculateFare, estimateFare, haversineDistanceKm} from '../fare';
+import {
+  calculateFare,
+  calculateFareBreakdown,
+  estimateFare,
+  haversineDistanceKm,
+} from '../fare';
 import {ALLRIDI_RATE_CARD, TTRS_RATE_CARD} from '../rateCards';
 
 describe('calculateFare with TTRS (tiered, minimum $28, no surge)', () => {
@@ -54,6 +59,44 @@ describe('calculateFare with Allridi (flat rate, minimum $22, supports surge)', 
   it('still applies the minimum fare floor when the surged fare is below it', () => {
     // raw = 15 * 1.05 = 15.75, below the $22 minimum
     expect(calculateFare(ALLRIDI_RATE_CARD, 0, 0, 1.05)).toBe(22);
+  });
+});
+
+describe('calculateFareBreakdown', () => {
+  it('breaks TTRS down into base/distance/time with no surge applied and minimum not hit', () => {
+    // base=16, distance=10*1.75=17.5, time=15*1.1=16.5, subtotal=50
+    const breakdown = calculateFareBreakdown(TTRS_RATE_CARD, 10, 15);
+    expect(breakdown).toEqual({
+      base: 16,
+      distanceCharge: 17.5,
+      timeCharge: 16.5,
+      subtotal: 50,
+      surgeMultiplier: 1,
+      total: 50,
+      minimumApplied: false,
+    });
+  });
+
+  it('flags minimumApplied when the raw total is below the floor', () => {
+    const breakdown = calculateFareBreakdown(TTRS_RATE_CARD, 0, 0);
+    expect(breakdown.subtotal).toBe(16);
+    expect(breakdown.total).toBe(28);
+    expect(breakdown.minimumApplied).toBe(true);
+  });
+
+  it('reports the effective surge multiplier and applies it to the total for Allridi', () => {
+    // subtotal = 15 + 30*1.55 + 10*1.1 = 72.5, total = 72.5*1.2 = 87
+    const breakdown = calculateFareBreakdown(ALLRIDI_RATE_CARD, 30, 10, 1.2);
+    expect(breakdown.subtotal).toBeCloseTo(72.5, 5);
+    expect(breakdown.surgeMultiplier).toBe(1.2);
+    expect(breakdown.total).toBeCloseTo(87, 5);
+    expect(breakdown.minimumApplied).toBe(false);
+  });
+
+  it('reports a surge multiplier of 1 for TTRS regardless of what was passed in', () => {
+    const breakdown = calculateFareBreakdown(TTRS_RATE_CARD, 30, 10, 1.5);
+    expect(breakdown.surgeMultiplier).toBe(1);
+    expect(breakdown.total).toBeCloseTo(92, 5);
   });
 });
 

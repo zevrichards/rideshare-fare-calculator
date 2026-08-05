@@ -1,6 +1,7 @@
 package com.ridesharefarecalc.overlay
 
 import com.ridesharefarecalc.BuildConfig
+import com.ridesharefarecalc.MainActivity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -111,10 +112,21 @@ class FareTrackingService : Service() {
     private fun showOverlayIfPermitted() {
         if (!canDrawOverlay()) return
         try {
-            overlayView = FareOverlayView(this) { stopTracking() }.also { it.show() }
+            overlayView = FareOverlayView(
+                context = this,
+                onTap = { bringAppToForeground() },
+                onStop = { stopTracking() },
+            ).also { it.show() }
         } catch (_: SecurityException) {
             overlayView = null
         }
+    }
+
+    private fun bringAppToForeground() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     private fun canDrawOverlay(): Boolean =
