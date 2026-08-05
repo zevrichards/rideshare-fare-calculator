@@ -6,17 +6,17 @@ data class Destination(val latitude: Double, val longitude: Double)
 
 /**
  * Parses destination coordinates out of the two intent URI shapes driver
- * apps use to hand off to a navigation app:
- *   geo:0,0?q=15.3,-61.38(My Destination)   -- hierarchical, has a real query
- *   google.navigation:q=15.3,-61.38          -- opaque, no "//" authority,
- *                                                so Uri.getQueryParameter
- *                                                doesn't work on it
+ * apps use to hand off to a navigation app. Both are opaque (no "//"
+ * authority): Uri.getQueryParameter() throws UnsupportedOperationException
+ * on both rather than just returning null, hence queryParam() below.
+ *   geo:0,0?q=15.3,-61.38(My Destination)
+ *   google.navigation:q=15.3,-61.38
  */
 object DestinationParser {
     private val LAT_LNG_REGEX = Regex("""^(-?[0-9]+\.?[0-9]*),(-?[0-9]+\.?[0-9]*)""")
 
     fun parse(uri: Uri): Destination? {
-        val qParam = uri.getQueryParameter("q") ?: extractOpaqueParam(uri.schemeSpecificPart, "q")
+        val qParam = queryParam(uri, "q") ?: extractOpaqueParam(uri.schemeSpecificPart, "q")
         qParam?.let(::extractLatLng)?.let { return it }
 
         val beforeQuery = uri.schemeSpecificPart?.substringBefore('?')
@@ -27,6 +27,16 @@ object DestinationParser {
 
         return null
     }
+
+    // geo: and google.navigation: URIs have no "//" authority, so Android's
+    // real Uri classifies them as opaque -- getQueryParameter() throws
+    // UnsupportedOperationException on those rather than returning null.
+    private fun queryParam(uri: Uri, key: String): String? =
+        try {
+            uri.getQueryParameter(key)
+        } catch (_: UnsupportedOperationException) {
+            null
+        }
 
     private fun extractOpaqueParam(raw: String?, key: String): String? {
         if (raw == null) return null
