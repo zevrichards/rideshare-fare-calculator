@@ -21,6 +21,24 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 
+// A point-in-time read of the running trip, exposed to JS via
+// FareOverlayModule.getActiveTrip()/onTripTick so TripScreen can drive its
+// breakdown UI from this service instead of its own separate GPS watch --
+// including adopting a trip that was started by NavigationInterceptActivity,
+// which JS never otherwise learns about. Ships the pre-trip estimate's
+// distance/time inputs rather than a pre-computed total so JS can run its
+// own calculateFareBreakdown and get a real Base/Distance/Time breakdown,
+// not just a dollar figure with no components -- both null together if no
+// destination was available to estimate from.
+data class TripSnapshot(
+    val distanceKm: Double,
+    val elapsedMinutes: Double,
+    val rateCardId: String,
+    val surgeMultiplier: Double,
+    val estimatedDistanceKm: Double?,
+    val estimatedMinutes: Double?,
+)
+
 class FareTrackingService : Service() {
 
     companion object {
@@ -37,6 +55,15 @@ class FareTrackingService : Service() {
         // listener attached (e.g. if the app process was backgrounded/killed).
         @Volatile
         var tripCompletedListener: ((distanceKm: Double, minutes: Double, total: Double) -> Unit)? = null
+
+        // null means no trip is currently running -- read by
+        // FareOverlayModule.getActiveTrip() for a synchronous snapshot, and
+        // updated every tick alongside tripTickListener for live updates.
+        @Volatile
+        var activeSnapshot: TripSnapshot? = null
+
+        @Volatile
+        var tripTickListener: ((TripSnapshot) -> Unit)? = null
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -44,6 +71,8 @@ class FareTrackingService : Service() {
     private val tickHandler = Handler(Looper.getMainLooper())
 
     private var estimatedTotal: Double? = null
+    private var estimatedDistanceKm: Double? = null
+    private var estimatedMinutes: Double? = null
     private var lastLocation: Location? = null
     private var distanceKm = 0.0
     private var startTimeMs = 0L
@@ -88,12 +117,19 @@ class FareTrackingService : Service() {
         distanceKm = 0.0
         lastLocation = null
         estimatedTotal = null
+        estimatedDistanceKm = null
+        estimatedMinutes = null
         startTimeMs = System.currentTimeMillis()
         isTracking = true
         // Read fresh each trip -- the driver may switch rate card or adjust
         // surge between trips without restarting the app.
         activeRateCard = RateCardPreference.getSelectedRateCard(this)
         surgeMultiplier = RateCardPreference.getSurgeMultiplier(this)
+
+        // Seeded synchronously (not just inside the first tick) so a
+        // getActiveTrip() call landing in the gap before the first tick
+        // still correctly reports a running trip instead of null.
+        activeSnapshot = TripSnapshot(0.0, 0.0, activeRateCard.id, surgeMultiplier, null, null)
 
         startForeground(NOTIFICATION_ID, buildNotification(0.0))
         showOverlayIfPermitted()
@@ -152,8 +188,8 @@ class FareTrackingService : Service() {
     private fun resolveEstimate(originLat: Double, originLng: Double, destLat: Double, destLng: Double) {
         val straightLineKm = FareMath.haversineDistanceKm(originLat, originLng, destLat, destLng)
         val roadDistanceEstimateKm = straightLineKm * 1.3
-        val estimatedMinutes = (roadDistanceEstimateKm / FareMath.ASSUMED_AVERAGE_SPEED_KMH) * 60.0
-        estimatedTotal = FareMath.calculateFare(activeRateCard, roadDistanceEstimateKm, estimatedMinutes, surgeMultiplier)
+        val assumedMinutes = (roadDistanceEstimateKm / FareMath.ASSUMED_AVERAGE_SPEED_KMH) * 60.0
+        applyEstimate(roadDistanceEstimateKm, assumedMinutes)
         updateOverlay()
 
         val apiKey = BuildConfig.GOOGLE_ROUTES_API_KEY
@@ -162,10 +198,16 @@ class FareTrackingService : Service() {
         Thread {
             val route = RoutesApiClient.fetchRouteEstimate(originLat, originLng, destLat, destLng, apiKey)
             if (route != null && isTracking) {
-                estimatedTotal = FareMath.calculateFare(activeRateCard, route.distanceKm, route.durationMinutes, surgeMultiplier)
+                applyEstimate(route.distanceKm, route.durationMinutes)
                 tickHandler.post { if (isTracking) updateOverlay() }
             }
         }.start()
+    }
+
+    private fun applyEstimate(distanceKm: Double, minutes: Double) {
+        estimatedDistanceKm = distanceKm
+        estimatedMinutes = minutes
+        estimatedTotal = FareMath.calculateFare(activeRateCard, distanceKm, minutes, surgeMultiplier)
     }
 
     private fun onNewLocation(location: Location) {
@@ -191,6 +233,12 @@ class FareTrackingService : Service() {
             overlayView = null
         }
         updateNotification(runningTotal)
+
+        val snapshot = TripSnapshot(
+            distanceKm, elapsedMinutes, activeRateCard.id, surgeMultiplier, estimatedDistanceKm, estimatedMinutes,
+        )
+        activeSnapshot = snapshot
+        tripTickListener?.invoke(snapshot)
     }
 
     private fun stopTracking() {
@@ -206,6 +254,7 @@ class FareTrackingService : Service() {
 
     private fun teardown() {
         isTracking = false
+        activeSnapshot = null
         tickHandler.removeCallbacks(tickRunnable)
         fusedLocationClient.removeLocationUpdates(locationCallback)
         try {

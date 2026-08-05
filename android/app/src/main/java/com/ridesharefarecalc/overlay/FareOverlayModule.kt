@@ -11,7 +11,17 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.WritableMap
 import org.json.JSONObject
+
+private fun TripSnapshot.toWritableMap(): WritableMap = Arguments.createMap().apply {
+    putDouble("distanceKm", distanceKm)
+    putDouble("elapsedMinutes", elapsedMinutes)
+    putString("rateCardId", rateCardId)
+    putDouble("surgeMultiplier", surgeMultiplier)
+    if (estimatedDistanceKm != null) putDouble("estimatedDistanceKm", estimatedDistanceKm) else putNull("estimatedDistanceKm")
+    if (estimatedMinutes != null) putDouble("estimatedMinutes", estimatedMinutes) else putNull("estimatedMinutes")
+}
 
 class FareOverlayModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -31,6 +41,14 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
                 putDouble("total", total)
             }
             reactApplicationContext.emitDeviceEvent("onTripCompleted", params)
+        }
+
+        // Live updates for an in-progress trip, whether it was started from
+        // this app's own Start Trip button or from a nav-intercept that JS
+        // never otherwise learns about (see getActiveTrip below for the
+        // one-time snapshot used when TripScreen first mounts/resumes).
+        FareTrackingService.tripTickListener = { snapshot ->
+            reactApplicationContext.emitDeviceEvent("onTripTick", snapshot.toWritableMap())
         }
     }
 
@@ -80,6 +98,16 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
             action = FareTrackingService.ACTION_STOP
         }
         reactApplicationContext.startService(intent)
+    }
+
+    // One-time snapshot for TripScreen to adopt a trip already in progress
+    // when it mounts/resumes (e.g. the overlay was tapped for a trip that
+    // started via nav-intercept, which never otherwise touches JS). Ongoing
+    // updates after that come from the onTripTick event instead.
+    @ReactMethod
+    fun getActiveTrip(promise: Promise) {
+        val snapshot = FareTrackingService.activeSnapshot
+        promise.resolve(snapshot?.toWritableMap())
     }
 
     // Mirrors JS's rate card selection/edits/surge into native

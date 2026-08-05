@@ -7,6 +7,7 @@ interface FareOverlayNativeModule {
   hasLocationPermission(): Promise<boolean>;
   startTrip(destLat: number, destLng: number): Promise<boolean>;
   stopTrip(): void;
+  getActiveTrip(): Promise<TripSnapshot | null>;
   getPreferredNavApp(): Promise<string>;
   setPreferredNavApp(packageName: string): void;
   openDefaultAppSettings(): void;
@@ -23,6 +24,21 @@ export interface TripCompletedEvent {
   total: number;
 }
 
+// Mirrors FareTrackingService.kt's TripSnapshot. estimatedDistanceKm/
+// estimatedMinutes are the inputs native used for the pre-trip estimate
+// (both null together if no destination was parsed from the intercept) --
+// shipped as raw components, not a pre-computed total, so JS can run the
+// same calculateFareBreakdown it already uses elsewhere and get a real
+// Base/Distance/Time breakdown instead of just a dollar figure.
+export interface TripSnapshot {
+  distanceKm: number;
+  elapsedMinutes: number;
+  rateCardId: string;
+  surgeMultiplier: number;
+  estimatedDistanceKm: number | null;
+  estimatedMinutes: number | null;
+}
+
 export const NAV_APPS = {
   WAZE: 'com.waze',
   GOOGLE_MAPS: 'com.google.android.apps.maps',
@@ -35,6 +51,8 @@ export const isOverlaySupported = Platform.OS === 'android';
 const nativeModule: FareOverlayNativeModule | null = isOverlaySupported
   ? NativeModules.FareOverlay
   : null;
+
+const emitter = nativeModule ? new NativeEventEmitter(NativeModules.FareOverlay) : null;
 
 export async function hasOverlayPermission(): Promise<boolean> {
   if (!nativeModule) {
@@ -59,6 +77,16 @@ export async function startOverlayTrip(
 
 export function stopOverlayTrip(): void {
   nativeModule?.stopTrip();
+}
+
+// One-time read of a trip already in progress, e.g. TripScreen mounting
+// after the overlay was tapped for a trip started via nav-intercept. Returns
+// null if no trip is currently running.
+export async function getActiveTrip(): Promise<TripSnapshot | null> {
+  if (!nativeModule) {
+    return null;
+  }
+  return nativeModule.getActiveTrip();
 }
 
 export async function getPreferredNavApp(): Promise<NavAppPackage> {
@@ -95,10 +123,21 @@ export function mirrorSurgeMultiplier(value: number): void {
 export function subscribeToTripCompleted(
   listener: (event: TripCompletedEvent) => void,
 ): () => void {
-  if (!nativeModule) {
+  if (!emitter) {
     return () => {};
   }
-  const emitter = new NativeEventEmitter(NativeModules.FareOverlay);
   const subscription = emitter.addListener('onTripCompleted', listener);
+  return () => subscription.remove();
+}
+
+// Fires roughly once a second while a trip is running, whether it was
+// started via startOverlayTrip() or by a nav-intercept.
+export function subscribeToTripTick(
+  listener: (snapshot: TripSnapshot) => void,
+): () => void {
+  if (!emitter) {
+    return () => {};
+  }
+  const subscription = emitter.addListener('onTripTick', listener);
   return () => subscription.remove();
 }

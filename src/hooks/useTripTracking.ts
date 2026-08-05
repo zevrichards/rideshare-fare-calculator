@@ -7,7 +7,7 @@ import {GeoPoint, haversineDistanceKm} from '../lib/fare';
 
 const MIN_USABLE_ACCURACY_METERS = 50;
 
-async function requestLocationPermission(): Promise<boolean> {
+export async function requestLocationPermission(): Promise<boolean> {
   if (Platform.OS !== 'android') {
     return true;
   }
@@ -23,7 +23,7 @@ async function requestLocationPermission(): Promise<boolean> {
   return granted === PermissionsAndroid.RESULTS.GRANTED;
 }
 
-async function requestNotificationPermission(): Promise<void> {
+export async function requestNotificationPermission(): Promise<void> {
   if (Platform.OS !== 'android' || Platform.Version < 33) {
     return;
   }
@@ -40,8 +40,15 @@ export interface TripTracking {
   elapsedMinutes: number;
   currentPosition: GeoPoint | null;
   error: string | null;
-  start: () => Promise<void>;
+  start: (destination: GeoPoint) => Promise<void>;
   stop: () => void;
+  // Set only by useNativeTripTracking, when TripScreen mounts/resumes while
+  // a trip started elsewhere (nav-intercept) is already running. Always
+  // null here -- this hook has no such adoption path.
+  adoptedRateCardId: string | null;
+  adoptedSurgeMultiplier: number | null;
+  adoptedEstimatedDistanceKm: number | null;
+  adoptedEstimatedMinutes: number | null;
 }
 
 export function useTripTracking(): TripTracking {
@@ -75,7 +82,11 @@ export function useTripTracking(): TripTracking {
     setIsTracking(false);
   }, [clearWatchers]);
 
-  const start = useCallback(async (): Promise<void> => {
+  // destination is unused here -- this hook tracks via GPS deltas, it
+  // doesn't need to know where the trip is headed. Accepted only so
+  // TripScreen can call tracking.start(destination) without branching on
+  // which hook (this one or useNativeTripTracking) it got.
+  const start = useCallback(async (_destination: GeoPoint): Promise<void> => {
     setError(null);
     const hasPermission = await requestLocationPermission();
     if (!hasPermission) {
@@ -134,5 +145,17 @@ export function useTripTracking(): TripTracking {
 
   useEffect(() => clearWatchers, [clearWatchers]);
 
-  return {isTracking, distanceKm, elapsedMinutes, currentPosition, error, start, stop};
+  return {
+    isTracking,
+    distanceKm,
+    elapsedMinutes,
+    currentPosition,
+    error,
+    start,
+    stop,
+    adoptedRateCardId: null,
+    adoptedSurgeMultiplier: null,
+    adoptedEstimatedDistanceKm: null,
+    adoptedEstimatedMinutes: null,
+  };
 }

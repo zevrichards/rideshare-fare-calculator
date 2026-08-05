@@ -3,8 +3,9 @@ import {AppState, Pressable, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
 import {estimateFareWithRouting} from '../lib/routing';
-import {RateCard, TTRS_RATE_CARD} from '../lib/rateCards';
+import {getRateCards, RateCard, TTRS_RATE_CARD} from '../lib/rateCards';
 import {useTripTracking} from '../hooks/useTripTracking';
+import {useNativeTripTracking} from '../hooks/useNativeTripTracking';
 import RateCardSection from './RateCardSection';
 import DestinationSearch from './DestinationSearch';
 import MapPickerScreen from './MapPickerScreen';
@@ -17,9 +18,6 @@ import {
   openDefaultAppSettings,
   requestOverlayPermission,
   setPreferredNavApp,
-  startOverlayTrip,
-  stopOverlayTrip,
-  subscribeToTripCompleted,
 } from '../native/FareOverlay';
 
 const FARE_DISCLAIMER =
@@ -77,7 +75,10 @@ export default function TripScreen() {
   const [activeRateCard, setActiveRateCard] = useState<RateCard>(TTRS_RATE_CARD);
   const [surgeMultiplier, setSurgeMultiplierState] = useState(1);
   const [showMapPicker, setShowMapPicker] = useState(false);
-  const tracking = useTripTracking();
+  // isOverlaySupported is a module-level constant (Platform.OS === 'android'),
+  // invariant for the process lifetime, so picking a hook based on it never
+  // changes the hook call order between renders.
+  const tracking = isOverlaySupported ? useNativeTripTracking() : useTripTracking();
 
   useEffect(() => {
     if (!isOverlaySupported) {
@@ -96,22 +97,53 @@ export default function TripScreen() {
       }
     });
 
-    // Stopping via the overlay's ✕ only stops the native side (service,
-    // notification, overlay view) -- it doesn't touch this screen's own
-    // useTripTracking hook, which has its own independent GPS watch. Without
-    // this, tapping the overlay body to bring the app to the foreground
-    // (see FareOverlayView's onTap) would show a "phantom" still-running
-    // trip. This only syncs isTracking/stops the watch -- it does not save
-    // history (removed; not needed, see git log).
-    const tripCompletedSubscription = subscribeToTripCompleted(() => {
-      tracking.stop();
-    });
-
     return () => {
       appStateSubscription.remove();
-      tripCompletedSubscription();
     };
   }, []);
+
+  // Adopts a trip that's already running when this screen mounts/resumes --
+  // only useNativeTripTracking (Android) ever sets these; useTripTracking
+  // (iOS) always reports them as null. RateCardSection is the only other
+  // place activeRateCard/surgeMultiplier get set, and it doesn't render
+  // while tracking.isTracking is true, so without this the breakdown would
+  // silently use the hardcoded TTRS/no-surge defaults for an adopted trip.
+  useEffect(() => {
+    if (!tracking.adoptedRateCardId) {
+      return;
+    }
+    const surge = tracking.adoptedSurgeMultiplier ?? 1;
+    if (tracking.adoptedSurgeMultiplier !== null) {
+      setSurgeMultiplierState(tracking.adoptedSurgeMultiplier);
+    }
+    getRateCards().then(cards => {
+      const matched = cards.find(card => card.id === tracking.adoptedRateCardId);
+      if (!matched) {
+        return;
+      }
+      setActiveRateCard(matched);
+      // Native ships the estimate's distance/time inputs (both null together
+      // if the intercept never got a destination to estimate from), not a
+      // pre-computed total -- so this always produces a real breakdown, the
+      // same way the Running Total below always does.
+      if (tracking.adoptedEstimatedDistanceKm !== null && tracking.adoptedEstimatedMinutes !== null) {
+        const breakdown = calculateFareBreakdown(
+          matched,
+          tracking.adoptedEstimatedDistanceKm,
+          tracking.adoptedEstimatedMinutes,
+          surge,
+        );
+        setEstimatedTotal(breakdown.total);
+        setEstimatedBreakdown(breakdown);
+        setEstimatedSource(null);
+      }
+    });
+  }, [
+    tracking.adoptedRateCardId,
+    tracking.adoptedSurgeMultiplier,
+    tracking.adoptedEstimatedDistanceKm,
+    tracking.adoptedEstimatedMinutes,
+  ]);
 
   const handleStart = async () => {
     setStartError(null);
@@ -134,10 +166,7 @@ export default function TripScreen() {
       setEstimatedTotal(estimate.total);
       setEstimatedBreakdown(estimate.breakdown);
       setEstimatedSource(estimate.source);
-      await tracking.start();
-      if (isOverlaySupported) {
-        await startOverlayTrip(lat, lng);
-      }
+      await tracking.start({latitude: lat, longitude: lng});
     } catch (err) {
       setStartError(
         err instanceof Error ? err.message : 'Failed to get current location.',
@@ -151,9 +180,6 @@ export default function TripScreen() {
   };
 
   const handleStop = () => {
-    if (isOverlaySupported) {
-      stopOverlayTrip();
-    }
     tracking.stop();
   };
 
