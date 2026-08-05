@@ -1,8 +1,4 @@
-export const BASE_FARE = 16;
-export const RATE_PER_KM = 1.75;
-export const LONG_DISTANCE_KM_THRESHOLD = 20;
-export const RATE_PER_KM_BEYOND_THRESHOLD = 3;
-export const RATE_PER_MINUTE = 1.1;
+import {RateCard} from './rateCards';
 
 export interface GeoPoint {
   latitude: number;
@@ -28,24 +24,47 @@ export function haversineDistanceKm(a: GeoPoint, b: GeoPoint): number {
   return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(h));
 }
 
-export function calculateFare(distanceKm: number, minutes: number): number {
-  const standardKm = Math.min(distanceKm, LONG_DISTANCE_KM_THRESHOLD);
-  const excessKm = Math.max(distanceKm - LONG_DISTANCE_KM_THRESHOLD, 0);
+// surgeMultiplier is ignored for rate cards that don't support surge (e.g.
+// TTRS) -- the caller doesn't need to know which cards support it.
+export function calculateFare(
+  rateCard: RateCard,
+  distanceKm: number,
+  minutes: number,
+  surgeMultiplier: number = 1,
+): number {
+  const hasTier = rateCard.longDistanceKmThreshold != null;
+  const standardKm = hasTier
+    ? Math.min(distanceKm, rateCard.longDistanceKmThreshold!)
+    : distanceKm;
+  const excessKm = hasTier
+    ? Math.max(distanceKm - rateCard.longDistanceKmThreshold!, 0)
+    : 0;
 
   const distanceCharge =
-    standardKm * RATE_PER_KM + excessKm * RATE_PER_KM_BEYOND_THRESHOLD;
-  const timeCharge = minutes * RATE_PER_MINUTE;
+    standardKm * rateCard.perKmRate +
+    excessKm * (rateCard.perKmRateBeyondThreshold ?? rateCard.perKmRate);
+  const timeCharge = minutes * rateCard.perMinuteRate;
 
-  return BASE_FARE + distanceCharge + timeCharge;
+  const effectiveSurge = rateCard.supportsSurge ? surgeMultiplier : 1;
+  const rawTotal = (rateCard.baseFare + distanceCharge + timeCharge) * effectiveSurge;
+
+  // The rate card's minimum fare is a floor on the whole trip, applied after
+  // surge -- a short/cheap surged trip still can't undercut the minimum.
+  return Math.max(rawTotal, rateCard.minimumFare);
 }
 
 // Straight-line distance systematically undershoots actual road distance;
 // this rough multiplier approximates road distance until we have routing data.
 export const STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR = 1.3;
 
-export function estimateFare(origin: GeoPoint, destination: GeoPoint): number {
+export function estimateFare(
+  rateCard: RateCard,
+  origin: GeoPoint,
+  destination: GeoPoint,
+  surgeMultiplier: number = 1,
+): number {
   const roadDistanceEstimateKm =
     haversineDistanceKm(origin, destination) *
     STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR;
-  return calculateFare(roadDistanceEstimateKm, 0);
+  return calculateFare(rateCard, roadDistanceEstimateKm, 0, surgeMultiplier);
 }

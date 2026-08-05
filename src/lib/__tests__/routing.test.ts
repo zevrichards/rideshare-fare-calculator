@@ -1,3 +1,5 @@
+import {TTRS_RATE_CARD} from '../rateCards';
+
 describe('estimateFareWithRouting', () => {
   const origin = {latitude: 0, longitude: 0};
   const destination = {latitude: 0, longitude: 1};
@@ -19,11 +21,11 @@ describe('estimateFareWithRouting', () => {
     const {estimateFareWithRouting} = require('../routing');
     const {estimateFare} = require('../fare');
 
-    const result = await estimateFareWithRouting(origin, destination);
+    const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(result).toEqual({
-      total: estimateFare(origin, destination),
+      total: estimateFare(TTRS_RATE_CARD, origin, destination),
       source: 'straight-line',
     });
   });
@@ -40,9 +42,38 @@ describe('estimateFareWithRouting', () => {
     const {estimateFareWithRouting} = require('../routing');
     const {calculateFare} = require('../fare');
 
-    const result = await estimateFareWithRouting(origin, destination);
+    const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
 
-    expect(result).toEqual({total: calculateFare(12, 0), source: 'routing'});
+    expect(result).toEqual({
+      total: calculateFare(TTRS_RATE_CARD, 12, 0),
+      source: 'routing',
+    });
+  });
+
+  it('applies a surge multiplier when the rate card supports it', async () => {
+    jest.doMock('../../config/apiKeys', () => ({
+      GOOGLE_ROUTES_API_KEY: 'test-key',
+    }));
+    (globalThis as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({routes: [{distanceMeters: 12000}]}),
+    });
+
+    const {estimateFareWithRouting} = require('../routing');
+    const {calculateFare} = require('../fare');
+    const {ALLRIDI_RATE_CARD} = require('../rateCards');
+
+    const result = await estimateFareWithRouting(
+      ALLRIDI_RATE_CARD,
+      origin,
+      destination,
+      1.2,
+    );
+
+    expect(result).toEqual({
+      total: calculateFare(ALLRIDI_RATE_CARD, 12, 0, 1.2),
+      source: 'routing',
+    });
   });
 
   it('falls back to the straight-line estimate on a non-OK response', async () => {
@@ -54,10 +85,10 @@ describe('estimateFareWithRouting', () => {
     const {estimateFareWithRouting} = require('../routing');
     const {estimateFare} = require('../fare');
 
-    const result = await estimateFareWithRouting(origin, destination);
+    const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
 
     expect(result).toEqual({
-      total: estimateFare(origin, destination),
+      total: estimateFare(TTRS_RATE_CARD, origin, destination),
       source: 'straight-line',
     });
   });
@@ -74,10 +105,10 @@ describe('estimateFareWithRouting', () => {
     const {estimateFareWithRouting} = require('../routing');
     const {estimateFare} = require('../fare');
 
-    const result = await estimateFareWithRouting(origin, destination);
+    const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
 
     expect(result).toEqual({
-      total: estimateFare(origin, destination),
+      total: estimateFare(TTRS_RATE_CARD, origin, destination),
       source: 'straight-line',
     });
   });
@@ -91,10 +122,10 @@ describe('estimateFareWithRouting', () => {
     const {estimateFareWithRouting} = require('../routing');
     const {estimateFare} = require('../fare');
 
-    const result = await estimateFareWithRouting(origin, destination);
+    const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
 
     expect(result).toEqual({
-      total: estimateFare(origin, destination),
+      total: estimateFare(TTRS_RATE_CARD, origin, destination),
       source: 'straight-line',
     });
   });

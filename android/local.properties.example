@@ -3,3 +3,8 @@
 # that as-is if present.
 
 GOOGLE_ROUTES_API_KEY=
+# Separate key/SKU from Routes -- enable "Maps SDK for Android" on the same
+# (or a different) Google Cloud project. Used by react-native-maps for the
+# destination map picker; without it the map renders with a "for
+# development purposes only" watermark or fails to load tiles.
+GOOGLE_MAPS_API_KEY=

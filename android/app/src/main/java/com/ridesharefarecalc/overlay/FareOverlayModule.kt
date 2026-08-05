@@ -11,21 +11,26 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.modules.core.DeviceEventManagerModule
+import org.json.JSONObject
 
 class FareOverlayModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
     init {
+        // Only fires if RN has actually booted in this process (e.g. the
+        // user opened the app UI at some point) -- FareTrackingService and
+        // NavigationInterceptActivity are plain Android classes that never
+        // touch ReactHost, so a purely intercepted trip (app never opened)
+        // won't have a listener registered here at all. That's fine: this
+        // event only drives trip-history persistence, which isn't needed
+        // (the actual rideshare app tracks trip/fare history already).
         FareTrackingService.tripCompletedListener = { distanceKm, minutes, total ->
             val params = Arguments.createMap().apply {
                 putDouble("distanceKm", distanceKm)
                 putDouble("minutes", minutes)
                 putDouble("total", total)
             }
-            reactApplicationContext
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                .emit("onTripCompleted", params)
+            reactApplicationContext.emitDeviceEvent("onTripCompleted", params)
         }
     }
 
@@ -75,6 +80,31 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
             action = FareTrackingService.ACTION_STOP
         }
         reactApplicationContext.startService(intent)
+    }
+
+    // Mirrors JS's rate card selection/edits/surge into native
+    // SharedPreferences (see RateCardPreference) so FareTrackingService can
+    // read them even when a trip is only ever driven by an intercepted nav
+    // intent and RN never boots. JS's AsyncStorage copy (src/lib/rateCards.ts)
+    // remains the source of truth for the app's own UI; these calls are a
+    // write-through, not a two-way sync.
+    @ReactMethod
+    fun setSelectedRateCard(id: String) {
+        RateCardPreference.setSelectedRateCardId(reactApplicationContext, id)
+    }
+
+    @ReactMethod
+    fun setRateCard(cardJson: String) {
+        try {
+            RateCardPreference.setRateCard(reactApplicationContext, RateCard.fromJson(JSONObject(cardJson)))
+        } catch (_: Exception) {
+            // Malformed payload from JS -- leave the previously stored card as-is.
+        }
+    }
+
+    @ReactMethod
+    fun setSurgeMultiplier(value: Double) {
+        RateCardPreference.setSurgeMultiplier(reactApplicationContext, value)
     }
 
     @ReactMethod

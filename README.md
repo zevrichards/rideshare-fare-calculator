@@ -18,6 +18,29 @@ distance via the Google Routes API instead:
 Both files are gitignored. Leaving either blank is safe -- the app falls
 back to the straight-line estimate.
 
+## Destination search
+
+The manual "Search Destination" box uses the Places API (New) Text Search
+endpoint, reusing the same key/project as Routes above -- enable "Places API
+(New)" on that Google Cloud project too (separate SKU/quota from Routes).
+No extra config file: it reads `GOOGLE_ROUTES_API_KEY` from
+`src/config/apiKeys.ts`. Leaving it blank just means search returns no
+results (no crash).
+
+## Map destination picker
+
+The "Pick on Map" button uses `react-native-maps` (Google Maps SDK for
+Android). This needs a **separate** API key/SKU from Routes/Places -- enable
+"Maps SDK for Android" on a Google Cloud project and create a key restricted
+to your app's package name (`com.ridesharefarecalc`) and signing
+certificate's SHA-1 fingerprint.
+
+`cp android/local.properties.example android/local.properties` and fill in
+`GOOGLE_MAPS_API_KEY` (this is separate from `GOOGLE_ROUTES_API_KEY` in the
+same file). Without it, the map screen still opens but shows a blank/
+watermarked map and logs an `Authorization failure` with setup instructions
+(check `adb logcat | grep "Google Maps Android API"` if it's not working).
+
 # Getting Started
 
 > **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.

@@ -1,18 +1,13 @@
 import React, {useEffect, useState} from 'react';
-import {
-  AppState,
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import {AppState, Pressable, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFare, GeoPoint} from '../lib/fare';
 import {estimateFareWithRouting} from '../lib/routing';
-import {CompletedTrip, getTripHistory, saveCompletedTrip} from '../lib/tripHistory';
+import {RateCard, TTRS_RATE_CARD} from '../lib/rateCards';
 import {useTripTracking} from '../hooks/useTripTracking';
+import RateCardSection from './RateCardSection';
+import DestinationSearch from './DestinationSearch';
+import MapPickerScreen from './MapPickerScreen';
 import {
   getPreferredNavApp,
   hasOverlayPermission,
@@ -24,10 +19,7 @@ import {
   setPreferredNavApp,
   startOverlayTrip,
   stopOverlayTrip,
-  subscribeToTripCompleted,
 } from '../native/FareOverlay';
-
-const RECENT_TRIPS_SHOWN = 5;
 
 function getCurrentPosition(): Promise<GeoPoint> {
   return new Promise((resolve, reject) => {
@@ -55,16 +47,12 @@ export default function TripScreen() {
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
     NAV_APPS.WAZE,
   );
-  const [history, setHistory] = useState<CompletedTrip[]>([]);
+  const [activeRateCard, setActiveRateCard] = useState<RateCard>(TTRS_RATE_CARD);
+  const [surgeMultiplier, setSurgeMultiplierState] = useState(1);
+  const [showMapPicker, setShowMapPicker] = useState(false);
   const tracking = useTripTracking();
 
-  const refreshHistory = () => {
-    getTripHistory().then(setHistory);
-  };
-
   useEffect(() => {
-    refreshHistory();
-
     if (!isOverlaySupported) {
       return;
     }
@@ -80,16 +68,9 @@ export default function TripScreen() {
         checkPermission();
       }
     });
-    // On Android this is the single source of truth for a completed trip
-    // (fires whether the trip was stopped in-app or via the overlay), so
-    // history is saved here rather than in handleStop to avoid double-saving.
-    const tripCompletedSubscription = subscribeToTripCompleted(event => {
-      saveCompletedTrip(event).then(refreshHistory);
-    });
 
     return () => {
       appStateSubscription.remove();
-      tripCompletedSubscription();
     };
   }, []);
 
@@ -105,10 +86,12 @@ export default function TripScreen() {
 
     try {
       const origin = await getCurrentPosition();
-      const estimate = await estimateFareWithRouting(origin, {
-        latitude: lat,
-        longitude: lng,
-      });
+      const estimate = await estimateFareWithRouting(
+        activeRateCard,
+        origin,
+        {latitude: lat, longitude: lng},
+        surgeMultiplier,
+      );
       setEstimatedTotal(estimate.total);
       setEstimatedSource(estimate.source);
       await tracking.start();
@@ -130,17 +113,29 @@ export default function TripScreen() {
   const handleStop = () => {
     if (isOverlaySupported) {
       stopOverlayTrip();
-    } else {
-      saveCompletedTrip({
-        distanceKm: tracking.distanceKm,
-        minutes: tracking.elapsedMinutes,
-        total: runningTotal,
-      }).then(refreshHistory);
     }
     tracking.stop();
   };
 
-  const runningTotal = calculateFare(tracking.distanceKm, tracking.elapsedMinutes);
+  const runningTotal = calculateFare(
+    activeRateCard,
+    tracking.distanceKm,
+    tracking.elapsedMinutes,
+    surgeMultiplier,
+  );
+
+  if (showMapPicker) {
+    return (
+      <MapPickerScreen
+        onCancel={() => setShowMapPicker(false)}
+        onConfirm={destination => {
+          setDestLat(String(destination.latitude));
+          setDestLng(String(destination.longitude));
+          setShowMapPicker(false);
+        }}
+      />
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -165,6 +160,13 @@ export default function TripScreen() {
             <Text style={styles.bannerButtonText}>Enable Floating Overlay</Text>
           </Pressable>
         </View>
+      )}
+
+      {!tracking.isTracking && (
+        <RateCardSection
+          onActiveRateCardChange={setActiveRateCard}
+          onSurgeMultiplierChange={setSurgeMultiplierState}
+        />
       )}
 
       {!tracking.isTracking && isOverlaySupported && (
@@ -197,41 +199,25 @@ export default function TripScreen() {
         </View>
       )}
 
-      {!tracking.isTracking && history.length > 0 && (
-        <View style={styles.historySection}>
-          <Text style={styles.settingsLabel}>Recent Trips</Text>
-          <FlatList
-            data={history.slice(0, RECENT_TRIPS_SHOWN)}
-            keyExtractor={item => item.id}
-            renderItem={({item}) => (
-              <Text style={styles.historyRow}>
-                {new Date(item.timestamp).toLocaleDateString()} ·{' '}
-                {item.distanceKm.toFixed(2)} km · {item.minutes.toFixed(1)} min
-                · ${item.total.toFixed(2)}
-              </Text>
-            )}
-          />
-        </View>
+      {!tracking.isTracking && (
+        <DestinationSearch
+          onSelect={result => {
+            setDestLat(String(result.location.latitude));
+            setDestLng(String(result.location.longitude));
+          }}
+        />
+      )}
+
+      {!tracking.isTracking && (
+        <Pressable
+          style={styles.mapPickerButton}
+          onPress={() => setShowMapPicker(true)}>
+          <Text style={styles.mapPickerButtonText}>Pick on Map</Text>
+        </Pressable>
       )}
 
       {!tracking.isTracking && (
         <View style={styles.form}>
-          <Text style={styles.label}>Destination Latitude</Text>
-          <TextInput
-            style={styles.input}
-            keyboardType="numeric"
-            value={destLat}
-            onChangeText={setDestLat}
-            placeholder="15.3010"
-          />
-          <Text style={styles.label}>Destination Longitude</Text>
-          <TextInput
-            style={styles.input}
-            keyboardType="numeric"
-            value={destLng}
-            onChangeText={setDestLng}
-            placeholder="-61.3880"
-          />
           <Pressable style={styles.button} onPress={handleStart}>
             <Text style={styles.buttonText}>Start Trip</Text>
           </Pressable>
@@ -343,25 +329,18 @@ const styles = StyleSheet.create({
     color: '#1a73e8',
     fontWeight: '600',
   },
-  historySection: {
+  mapPickerButton: {
+    borderWidth: 1,
+    borderColor: '#1a73e8',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
     marginBottom: 16,
   },
-  historyRow: {
-    fontSize: 12,
-    color: '#777',
-    paddingVertical: 2,
-  },
-  label: {
+  mapPickerButtonText: {
+    color: '#1a73e8',
     fontSize: 14,
-    color: '#555',
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    marginBottom: 12,
+    fontWeight: '600',
   },
   button: {
     backgroundColor: '#1a73e8',

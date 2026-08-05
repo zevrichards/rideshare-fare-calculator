@@ -1,5 +1,6 @@
 import {GOOGLE_ROUTES_API_KEY} from '../config/apiKeys';
 import {calculateFare, estimateFare, GeoPoint} from './fare';
+import {RateCard} from './rateCards';
 
 const COMPUTE_ROUTES_URL =
   'https://routes.googleapis.com/directions/v2:computeRoutes';
@@ -53,17 +54,28 @@ async function fetchRoadDistanceKm(
 // request fails for any reason -- this must never throw, since it sits in
 // the critical path of starting a trip.
 export async function estimateFareWithRouting(
+  rateCard: RateCard,
   origin: GeoPoint,
   destination: GeoPoint,
+  surgeMultiplier: number = 1,
 ): Promise<FareEstimate> {
   if (!GOOGLE_ROUTES_API_KEY) {
-    return {total: estimateFare(origin, destination), source: 'straight-line'};
+    return {
+      total: estimateFare(rateCard, origin, destination, surgeMultiplier),
+      source: 'straight-line',
+    };
   }
 
   try {
     const roadDistanceKm = await fetchRoadDistanceKm(origin, destination);
-    return {total: calculateFare(roadDistanceKm, 0), source: 'routing'};
+    return {
+      total: calculateFare(rateCard, roadDistanceKm, 0, surgeMultiplier),
+      source: 'routing',
+    };
   } catch {
-    return {total: estimateFare(origin, destination), source: 'straight-line'};
+    return {
+      total: estimateFare(rateCard, origin, destination, surgeMultiplier),
+      source: 'straight-line',
+    };
   }
 }

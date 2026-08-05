@@ -23,9 +23,11 @@ class NavigationInterceptActivity : Activity() {
         val uri = intent?.data
         val destination = uri?.let(DestinationParser::parse)
 
-        if (destination != null) {
-            startTrackingService(destination)
-        }
+        // Track even when the destination couldn't be parsed -- the running
+        // total (distance/time based) doesn't need one, only the pre-trip
+        // "Estimated Total" does, and the overlay already renders fine
+        // without it (see FareOverlayView.update's null handling).
+        startTrackingService(destination)
 
         if (uri != null) {
             relaunchRealNavigationApp(uri)
@@ -34,10 +36,12 @@ class NavigationInterceptActivity : Activity() {
         finish()
     }
 
-    private fun startTrackingService(destination: Destination) {
+    private fun startTrackingService(destination: Destination?) {
         val serviceIntent = Intent(this, FareTrackingService::class.java).apply {
-            putExtra(FareTrackingService.EXTRA_DEST_LAT, destination.latitude)
-            putExtra(FareTrackingService.EXTRA_DEST_LNG, destination.longitude)
+            if (destination != null) {
+                putExtra(FareTrackingService.EXTRA_DEST_LAT, destination.latitude)
+                putExtra(FareTrackingService.EXTRA_DEST_LNG, destination.longitude)
+            }
         }
         try {
             startForegroundService(serviceIntent)

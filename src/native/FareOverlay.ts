@@ -1,4 +1,5 @@
 import {NativeEventEmitter, NativeModules, Platform} from 'react-native';
+import {RateCard} from '../lib/rateCards';
 
 interface FareOverlayNativeModule {
   hasOverlayPermission(): Promise<boolean>;
@@ -9,6 +10,9 @@ interface FareOverlayNativeModule {
   getPreferredNavApp(): Promise<string>;
   setPreferredNavApp(packageName: string): void;
   openDefaultAppSettings(): void;
+  setSelectedRateCard(id: string): void;
+  setRateCard(cardJson: string): void;
+  setSurgeMultiplier(value: number): void;
   addListener(eventName: string): void;
   removeListeners(count: number): void;
 }
@@ -70,6 +74,22 @@ export function setPreferredNavApp(packageName: NavAppPackage): void {
 
 export function openDefaultAppSettings(): void {
   nativeModule?.openDefaultAppSettings();
+}
+
+// These mirror JS's AsyncStorage-backed rate card state (src/lib/rateCards.ts,
+// the source of truth for the app's own UI) into native SharedPreferences,
+// so an intercepted trip -- which never touches JS -- still uses the
+// currently-selected card/surge. One-way write-through, not a live sync.
+export function mirrorSelectedRateCard(id: string): void {
+  nativeModule?.setSelectedRateCard(id);
+}
+
+export function mirrorRateCard(card: RateCard): void {
+  nativeModule?.setRateCard(JSON.stringify(card));
+}
+
+export function mirrorSurgeMultiplier(value: number): void {
+  nativeModule?.setSurgeMultiplier(value);
 }
 
 export function subscribeToTripCompleted(

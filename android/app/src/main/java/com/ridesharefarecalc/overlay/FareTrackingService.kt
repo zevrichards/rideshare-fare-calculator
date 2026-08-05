@@ -46,6 +46,8 @@ class FareTrackingService : Service() {
     private var lastLocation: Location? = null
     private var distanceKm = 0.0
     private var startTimeMs = 0L
+    private var activeRateCard: RateCard = RateCard.TTRS
+    private var surgeMultiplier: Double = 1.0
 
     // Guards against the background routing lookup in resolveEstimate()
     // landing after the trip has already been stopped and re-showing a
@@ -87,6 +89,10 @@ class FareTrackingService : Service() {
         estimatedTotal = null
         startTimeMs = System.currentTimeMillis()
         isTracking = true
+        // Read fresh each trip -- the driver may switch rate card or adjust
+        // surge between trips without restarting the app.
+        activeRateCard = RateCardPreference.getSelectedRateCard(this)
+        surgeMultiplier = RateCardPreference.getSurgeMultiplier(this)
 
         startForeground(NOTIFICATION_ID, buildNotification(0.0))
         showOverlayIfPermitted()
@@ -131,7 +137,7 @@ class FareTrackingService : Service() {
     // on a background thread and update the overlay again once it lands.
     private fun resolveEstimate(originLat: Double, originLng: Double, destLat: Double, destLng: Double) {
         val straightLineKm = FareMath.haversineDistanceKm(originLat, originLng, destLat, destLng)
-        estimatedTotal = FareMath.calculateFare(straightLineKm * 1.3, 0.0)
+        estimatedTotal = FareMath.calculateFare(activeRateCard, straightLineKm * 1.3, 0.0, surgeMultiplier)
         updateOverlay()
 
         val apiKey = BuildConfig.GOOGLE_ROUTES_API_KEY
@@ -140,7 +146,7 @@ class FareTrackingService : Service() {
         Thread {
             val roadKm = RoutesApiClient.fetchRoadDistanceKm(originLat, originLng, destLat, destLng, apiKey)
             if (roadKm != null && isTracking) {
-                estimatedTotal = FareMath.calculateFare(roadKm, 0.0)
+                estimatedTotal = FareMath.calculateFare(activeRateCard, roadKm, 0.0, surgeMultiplier)
                 tickHandler.post { if (isTracking) updateOverlay() }
             }
         }.start()
@@ -162,7 +168,7 @@ class FareTrackingService : Service() {
 
     private fun updateOverlay() {
         val elapsedMinutes = (System.currentTimeMillis() - startTimeMs) / 60000.0
-        val runningTotal = FareMath.calculateFare(distanceKm, elapsedMinutes)
+        val runningTotal = FareMath.calculateFare(activeRateCard, distanceKm, elapsedMinutes, surgeMultiplier)
         try {
             overlayView?.update(estimatedTotal, runningTotal, distanceKm, elapsedMinutes)
         } catch (_: SecurityException) {
@@ -173,7 +179,7 @@ class FareTrackingService : Service() {
 
     private fun stopTracking() {
         val elapsedMinutes = (System.currentTimeMillis() - startTimeMs) / 60000.0
-        val finalTotal = FareMath.calculateFare(distanceKm, elapsedMinutes)
+        val finalTotal = FareMath.calculateFare(activeRateCard, distanceKm, elapsedMinutes, surgeMultiplier)
 
         teardown()
         tripCompletedListener?.invoke(distanceKm, elapsedMinutes, finalTotal)

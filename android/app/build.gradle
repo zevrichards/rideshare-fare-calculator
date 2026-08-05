@@ -80,6 +80,7 @@ if (localPropertiesFile.exists()) {
     localPropertiesFile.withInputStream { localProperties.load(it) }
 }
 def googleRoutesApiKey = localProperties.getProperty('GOOGLE_ROUTES_API_KEY', '')
+def googleMapsApiKey = localProperties.getProperty('GOOGLE_MAPS_API_KEY', '')
 
 android {
     ndkVersion rootProject.ext.ndkVersion
@@ -99,6 +100,10 @@ android {
         versionCode 1
         versionName "1.0"
         buildConfigField "String", "GOOGLE_ROUTES_API_KEY", "\"${googleRoutesApiKey}\""
+        // Consumed by react-native-maps' AndroidManifest meta-data entry
+        // (com.google.android.geo.API_KEY), not read from BuildConfig --
+        // the Maps SDK requires it declared in the manifest itself.
+        manifestPlaceholders = [googleMapsApiKey: googleMapsApiKey]
     }
     signingConfigs {
         debug {
