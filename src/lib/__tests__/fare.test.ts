@@ -1,8 +1,11 @@
 import {
+  ASSUMED_AVERAGE_SPEED_KMH,
   calculateFare,
   calculateFareBreakdown,
   estimateFare,
+  estimateFareBreakdown,
   haversineDistanceKm,
+  STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR,
 } from '../fare';
 import {ALLRIDI_RATE_CARD, TTRS_RATE_CARD} from '../rateCards';
 
@@ -119,13 +122,22 @@ describe('estimateFare', () => {
     expect(estimateFare(TTRS_RATE_CARD, point, point)).toBeCloseTo(28, 5);
   });
 
-  it('applies the road-distance fudge factor to the straight-line distance', () => {
+  it('applies the road-distance fudge factor and an assumed average speed for the time charge', () => {
     const a = {latitude: 0, longitude: 0};
     const b = {latitude: 0, longitude: 1};
     const straightLineKm = haversineDistanceKm(a, b);
+    const roadDistanceKm = straightLineKm * STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR;
+    const estimatedMinutes = (roadDistanceKm / ASSUMED_AVERAGE_SPEED_KMH) * 60;
     expect(estimateFare(TTRS_RATE_CARD, a, b)).toBeCloseTo(
-      calculateFare(TTRS_RATE_CARD, straightLineKm * 1.3, 0),
+      calculateFare(TTRS_RATE_CARD, roadDistanceKm, estimatedMinutes),
       5,
     );
+  });
+
+  it('gives a non-zero time charge for a non-zero-distance estimate', () => {
+    const a = {latitude: 0, longitude: 0};
+    const b = {latitude: 0, longitude: 1};
+    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, a, b);
+    expect(breakdown.timeCharge).toBeGreaterThan(0);
   });
 });

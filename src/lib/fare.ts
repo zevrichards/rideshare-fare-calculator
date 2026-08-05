@@ -89,6 +89,11 @@ export function calculateFare(
 // this rough multiplier approximates road distance until we have routing data.
 export const STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR = 1.3;
 
+// Only used when there's no real routing data at all (no API key, or the
+// Routes API request failed) -- a rough guess so the pre-trip estimate has
+// *some* time charge instead of always $0, not meant to reflect real traffic.
+export const ASSUMED_AVERAGE_SPEED_KMH = 30;
+
 export function estimateFareBreakdown(
   rateCard: RateCard,
   origin: GeoPoint,
@@ -98,7 +103,8 @@ export function estimateFareBreakdown(
   const roadDistanceEstimateKm =
     haversineDistanceKm(origin, destination) *
     STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR;
-  return calculateFareBreakdown(rateCard, roadDistanceEstimateKm, 0, surgeMultiplier);
+  const estimatedMinutes = (roadDistanceEstimateKm / ASSUMED_AVERAGE_SPEED_KMH) * 60;
+  return calculateFareBreakdown(rateCard, roadDistanceEstimateKm, estimatedMinutes, surgeMultiplier);
 }
 
 export function estimateFare(

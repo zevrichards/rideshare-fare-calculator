@@ -409,7 +409,8 @@ const styles = StyleSheet.create({
   },
   disclaimer: {
     fontSize: 11,
-    color: '#888',
+    color: '#d93025',
+    fontWeight: '700',
     textAlign: 'center',
     marginTop: 8,
   },

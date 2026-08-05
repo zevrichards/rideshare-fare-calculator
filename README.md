@@ -2,12 +2,16 @@ This is a new [**React Native**](https://reactnative.dev) project, bootstrapped 
 
 # Configuration
 
-Fare estimates use straight-line distance x1.3 by default. To use real road
-distance via the Google Routes API instead:
+Fare estimates use straight-line distance x1.3 and an assumed 30km/h average
+speed by default. To use real, traffic-aware road distance and duration via
+the Google Routes API instead:
 
 1. Enable the "Routes API" on a Google Cloud project and create an API key.
-   Pricing is $5 per 1,000 Basic `computeRoutes` requests, with 10,000 free
-   per month under the Essentials tier (see
+   Requests here ask for `routingPreference: TRAFFIC_AWARE` (to get a real
+   time estimate that accounts for traffic, not just distance), which bills
+   at the **Pro** SKU: $10 per 1,000 requests, 5,000 free per month --
+   pricier than the $5/1,000 (10,000 free) Basic tier a plain distance-only
+   request would use (see
    [developers.google.com/maps/billing-and-pricing](https://developers.google.com/maps/billing-and-pricing/overview)).
 2. JS/iOS: `cp src/config/apiKeys.example.ts src/config/apiKeys.ts` and fill
    in `GOOGLE_ROUTES_API_KEY`.
@@ -16,7 +20,7 @@ distance via the Google Routes API instead:
    for estimates during the background navigation-intercept flow).
 
 Both files are gitignored. Leaving either blank is safe -- the app falls
-back to the straight-line estimate.
+back to the straight-line distance + assumed-speed estimate.
 
 ## Destination search
 

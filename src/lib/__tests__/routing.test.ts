@@ -28,22 +28,44 @@ describe('estimateFareWithRouting', () => {
     expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
   });
 
-  it('uses road distance from the Routes API when the request succeeds', async () => {
+  it('uses road distance and traffic-aware duration from the Routes API when the request succeeds', async () => {
     jest.doMock('../../config/apiKeys', () => ({
       GOOGLE_ROUTES_API_KEY: 'test-key',
     }));
     (globalThis as any).fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({routes: [{distanceMeters: 12000}]}),
+      json: async () => ({routes: [{distanceMeters: 12000, duration: '600s'}]}),
     });
 
     const {estimateFareWithRouting} = require('../routing');
     const {calculateFareBreakdown} = require('../fare');
 
     const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
-    const breakdown = calculateFareBreakdown(TTRS_RATE_CARD, 12, 0);
+    // 600s = 10 minutes
+    const breakdown = calculateFareBreakdown(TTRS_RATE_CARD, 12, 10);
 
     expect(result).toEqual({total: breakdown.total, source: 'routing', breakdown});
+    expect(breakdown.timeCharge).toBeGreaterThan(0);
+  });
+
+  it('requests a traffic-aware duration alongside distance', async () => {
+    jest.doMock('../../config/apiKeys', () => ({
+      GOOGLE_ROUTES_API_KEY: 'test-key',
+    }));
+    const fetchSpy = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({routes: [{distanceMeters: 12000, duration: '600s'}]}),
+    });
+    (globalThis as any).fetch = fetchSpy;
+
+    const {estimateFareWithRouting} = require('../routing');
+    await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
+
+    const [url, options] = fetchSpy.mock.calls[0];
+    expect(url).toContain('computeRoutes');
+    expect(options.headers['X-Goog-FieldMask']).toContain('routes.duration');
+    const body = JSON.parse(options.body);
+    expect(body.routingPreference).toBe('TRAFFIC_AWARE');
   });
 
   it('applies a surge multiplier when the rate card supports it', async () => {
@@ -52,7 +74,7 @@ describe('estimateFareWithRouting', () => {
     }));
     (globalThis as any).fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({routes: [{distanceMeters: 12000}]}),
+      json: async () => ({routes: [{distanceMeters: 12000, duration: '600s'}]}),
     });
 
     const {estimateFareWithRouting} = require('../routing');
@@ -65,7 +87,7 @@ describe('estimateFareWithRouting', () => {
       destination,
       1.2,
     );
-    const breakdown = calculateFareBreakdown(ALLRIDI_RATE_CARD, 12, 0, 1.2);
+    const breakdown = calculateFareBreakdown(ALLRIDI_RATE_CARD, 12, 10, 1.2);
 
     expect(result).toEqual({total: breakdown.total, source: 'routing', breakdown});
   });
@@ -92,6 +114,24 @@ describe('estimateFareWithRouting', () => {
     (globalThis as any).fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({routes: []}),
+    });
+
+    const {estimateFareWithRouting} = require('../routing');
+    const {estimateFareBreakdown} = require('../fare');
+
+    const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
+    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, origin, destination);
+
+    expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
+  });
+
+  it('falls back to the straight-line estimate when duration is missing', async () => {
+    jest.doMock('../../config/apiKeys', () => ({
+      GOOGLE_ROUTES_API_KEY: 'test-key',
+    }));
+    (globalThis as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({routes: [{distanceMeters: 12000}]}),
     });
 
     const {estimateFareWithRouting} = require('../routing');

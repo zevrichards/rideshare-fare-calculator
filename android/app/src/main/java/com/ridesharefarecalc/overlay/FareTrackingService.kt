@@ -144,21 +144,25 @@ class FareTrackingService : Service() {
             }
     }
 
-    // Straight-line*1.3 is the immediate, guaranteed-available estimate; if a
-    // routes API key is configured we then refine it with real road distance
-    // on a background thread and update the overlay again once it lands.
+    // Straight-line*1.3 distance with an assumed-average-speed time guess is
+    // the immediate, guaranteed-available estimate; if a routes API key is
+    // configured we then refine it with real, traffic-aware road
+    // distance/duration on a background thread and update the overlay again
+    // once it lands.
     private fun resolveEstimate(originLat: Double, originLng: Double, destLat: Double, destLng: Double) {
         val straightLineKm = FareMath.haversineDistanceKm(originLat, originLng, destLat, destLng)
-        estimatedTotal = FareMath.calculateFare(activeRateCard, straightLineKm * 1.3, 0.0, surgeMultiplier)
+        val roadDistanceEstimateKm = straightLineKm * 1.3
+        val estimatedMinutes = (roadDistanceEstimateKm / FareMath.ASSUMED_AVERAGE_SPEED_KMH) * 60.0
+        estimatedTotal = FareMath.calculateFare(activeRateCard, roadDistanceEstimateKm, estimatedMinutes, surgeMultiplier)
         updateOverlay()
 
         val apiKey = BuildConfig.GOOGLE_ROUTES_API_KEY
         if (apiKey.isEmpty()) return
 
         Thread {
-            val roadKm = RoutesApiClient.fetchRoadDistanceKm(originLat, originLng, destLat, destLng, apiKey)
-            if (roadKm != null && isTracking) {
-                estimatedTotal = FareMath.calculateFare(activeRateCard, roadKm, 0.0, surgeMultiplier)
+            val route = RoutesApiClient.fetchRouteEstimate(originLat, originLng, destLat, destLng, apiKey)
+            if (route != null && isTracking) {
+                estimatedTotal = FareMath.calculateFare(activeRateCard, route.distanceKm, route.durationMinutes, surgeMultiplier)
                 tickHandler.post { if (isTracking) updateOverlay() }
             }
         }.start()

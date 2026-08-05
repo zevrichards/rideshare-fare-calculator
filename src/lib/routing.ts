@@ -17,10 +17,22 @@ export interface FareEstimate {
   breakdown: FareBreakdown;
 }
 
-async function fetchRoadDistanceKm(
+interface RouteEstimate {
+  distanceKm: number;
+  durationMinutes: number;
+}
+
+// Routes API returns duration as a protobuf Duration string, e.g. "929s".
+function parseDurationSeconds(duration: unknown): number | null {
+  if (typeof duration !== 'string') return null;
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(duration);
+  return match ? Number(match[1]) : null;
+}
+
+async function fetchRouteEstimate(
   origin: GeoPoint,
   destination: GeoPoint,
-): Promise<number> {
+): Promise<RouteEstimate> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -30,12 +42,16 @@ async function fetchRoadDistanceKm(
       headers: {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': GOOGLE_ROUTES_API_KEY,
-        'X-Goog-FieldMask': 'routes.distanceMeters',
+        'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
       },
       body: JSON.stringify({
         origin: {location: {latLng: origin}},
         destination: {location: {latLng: destination}},
         travelMode: 'DRIVE',
+        // Duration reflects live/predictive traffic conditions. This bills
+        // at the Routes API's Pro SKU ($10/1,000, 5,000 free/month) rather
+        // than Basic ($5/1,000, 10,000 free/month) -- see README.
+        routingPreference: 'TRAFFIC_AWARE',
       }),
       signal: controller.signal,
     });
@@ -45,11 +61,13 @@ async function fetchRoadDistanceKm(
     }
 
     const data = await response.json();
-    const distanceMeters = data?.routes?.[0]?.distanceMeters;
-    if (typeof distanceMeters !== 'number') {
-      throw new Error('Routes API response missing distanceMeters');
+    const route = data?.routes?.[0];
+    const distanceMeters = route?.distanceMeters;
+    const durationSeconds = parseDurationSeconds(route?.duration);
+    if (typeof distanceMeters !== 'number' || durationSeconds == null) {
+      throw new Error('Routes API response missing distanceMeters/duration');
     }
-    return distanceMeters / 1000;
+    return {distanceKm: distanceMeters / 1000, durationMinutes: durationSeconds / 60};
   } finally {
     clearTimeout(timeout);
   }
@@ -71,8 +89,8 @@ export async function estimateFareWithRouting(
   }
 
   try {
-    const roadDistanceKm = await fetchRoadDistanceKm(origin, destination);
-    const breakdown = calculateFareBreakdown(rateCard, roadDistanceKm, 0, surgeMultiplier);
+    const {distanceKm, durationMinutes} = await fetchRouteEstimate(origin, destination);
+    const breakdown = calculateFareBreakdown(rateCard, distanceKm, durationMinutes, surgeMultiplier);
     return {total: breakdown.total, source: 'routing', breakdown};
   } catch {
     const breakdown = estimateFareBreakdown(rateCard, origin, destination, surgeMultiplier);
