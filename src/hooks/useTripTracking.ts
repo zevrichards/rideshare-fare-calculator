@@ -40,7 +40,7 @@ export interface TripTracking {
   elapsedMinutes: number;
   currentPosition: GeoPoint | null;
   error: string | null;
-  start: (destination: GeoPoint) => Promise<void>;
+  start: (destination: GeoPoint | null) => Promise<void>;
   stop: () => void;
   // Set only by useNativeTripTracking, when TripScreen mounts/resumes while
   // a trip started elsewhere (nav-intercept) is already running. Always
@@ -86,7 +86,7 @@ export function useTripTracking(): TripTracking {
   // doesn't need to know where the trip is headed. Accepted only so
   // TripScreen can call tracking.start(destination) without branching on
   // which hook (this one or useNativeTripTracking) it got.
-  const start = useCallback(async (_destination: GeoPoint): Promise<void> => {
+  const start = useCallback(async (_destination: GeoPoint | null): Promise<void> => {
     setError(null);
     const hasPermission = await requestLocationPermission();
     if (!hasPermission) {

@@ -1,7 +1,8 @@
-import React, {useState} from 'react';
+import React, {useMemo, useState} from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import MapView, {MapPressEvent, Marker} from 'react-native-maps';
 import {GeoPoint} from '../lib/fare';
+import {ThemeColors, useThemeColors} from '../theme/colors';
 
 interface MapPickerScreenProps {
   onConfirm: (destination: GeoPoint) => void;
@@ -19,6 +20,8 @@ const DEFAULT_REGION = {
 
 export default function MapPickerScreen({onConfirm, onCancel}: MapPickerScreenProps) {
   const [selected, setSelected] = useState<GeoPoint | null>(null);
+  const colors = useThemeColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   const handlePress = (event: MapPressEvent) => {
     setSelected(event.nativeEvent.coordinate);
@@ -52,53 +55,54 @@ export default function MapPickerScreen({onConfirm, onCancel}: MapPickerScreenPr
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  map: {
-    flex: 1,
-  },
-  footer: {
-    padding: 16,
-    backgroundColor: '#fff',
-  },
-  hint: {
-    fontSize: 13,
-    color: '#555',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  cancelButton: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  confirmButton: {
-    flex: 1,
-    backgroundColor: '#1a73e8',
-    borderRadius: 8,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  confirmButtonDisabled: {
-    opacity: 0.5,
-  },
-  confirmButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-});
+const createStyles = (colors: ThemeColors) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+    },
+    map: {
+      flex: 1,
+    },
+    footer: {
+      padding: 16,
+      backgroundColor: colors.surface,
+    },
+    hint: {
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginBottom: 12,
+      textAlign: 'center',
+    },
+    buttonRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    cancelButton: {
+      flex: 1,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      paddingVertical: 14,
+      alignItems: 'center',
+    },
+    cancelButtonText: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    confirmButton: {
+      flex: 1,
+      backgroundColor: colors.primary,
+      borderRadius: 8,
+      paddingVertical: 14,
+      alignItems: 'center',
+    },
+    confirmButtonDisabled: {
+      opacity: 0.5,
+    },
+    confirmButtonText: {
+      color: colors.onPrimary,
+      fontSize: 16,
+      fontWeight: '600',
+    },
+  });

@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import Slider from '@react-native-community/slider';
 import {
@@ -15,6 +15,7 @@ import {
   mirrorSelectedRateCard,
   mirrorSurgeMultiplier,
 } from '../native/FareOverlay';
+import {ThemeColors, useThemeColors} from '../theme/colors';
 
 interface RateCardSectionProps {
   onActiveRateCardChange: (card: RateCard) => void;
@@ -53,6 +54,8 @@ export default function RateCardSection({
   const [editing, setEditing] = useState(false);
   const [fields, setFields] = useState<EditableFields | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const colors = useThemeColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   useEffect(() => {
     Promise.all([getRateCards(), getSelectedRateCardId(), getSurgeMultiplier()]).then(
@@ -240,6 +243,11 @@ function NumericField({
   value: string;
   onChangeText: (text: string) => void;
 }) {
+  // Separate component, so it can't reach RateCardSection's local `styles`
+  // (that's created inside the parent, not at module scope) -- recomputing
+  // it here is cheap and keeps this component self-contained.
+  const colors = useThemeColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   return (
     <View style={styles.fieldRow}>
       <Text style={styles.fieldLabel}>{label}</Text>
@@ -253,108 +261,110 @@ function NumericField({
   );
 }
 
-const styles = StyleSheet.create({
-  section: {
-    marginBottom: 16,
-  },
-  label: {
-    fontSize: 13,
-    color: '#555',
-    marginBottom: 6,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  option: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  optionSelected: {
-    borderColor: '#1a73e8',
-    backgroundColor: '#e8f0fe',
-  },
-  optionText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
-  linkButton: {
-    alignSelf: 'flex-start',
-    marginBottom: 8,
-  },
-  linkButtonText: {
-    fontSize: 13,
-    color: '#1a73e8',
-    fontWeight: '600',
-  },
-  editForm: {
-    backgroundColor: '#f5f5f5',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
-    gap: 8,
-  },
-  fieldRow: {
-    gap: 4,
-  },
-  fieldLabel: {
-    fontSize: 12,
-    color: '#555',
-  },
-  fieldInput: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    fontSize: 14,
-    backgroundColor: '#fff',
-  },
-  editButtonRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  saveButton: {
-    flex: 1,
-    backgroundColor: '#1a73e8',
-    borderRadius: 6,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  cancelButton: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 6,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
-  error: {
-    color: '#d93025',
-    fontSize: 12,
-  },
-  surgeSection: {
-    marginTop: 4,
-  },
-  slider: {
-    width: '100%',
-    height: 40,
-  },
-});
+const createStyles = (colors: ThemeColors) =>
+  StyleSheet.create({
+    section: {
+      marginBottom: 16,
+    },
+    label: {
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginBottom: 6,
+    },
+    row: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 8,
+    },
+    option: {
+      flex: 1,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      paddingVertical: 10,
+      alignItems: 'center',
+    },
+    optionSelected: {
+      borderColor: colors.primary,
+      backgroundColor: colors.surfaceAlt,
+    },
+    optionText: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    linkButton: {
+      alignSelf: 'flex-start',
+      marginBottom: 8,
+    },
+    linkButtonText: {
+      fontSize: 13,
+      color: colors.primary,
+      fontWeight: '600',
+    },
+    editForm: {
+      backgroundColor: colors.panelBg,
+      borderRadius: 8,
+      padding: 12,
+      marginBottom: 8,
+      gap: 8,
+    },
+    fieldRow: {
+      gap: 4,
+    },
+    fieldLabel: {
+      fontSize: 12,
+      color: colors.textSecondary,
+    },
+    fieldInput: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      paddingVertical: 8,
+      paddingHorizontal: 10,
+      fontSize: 14,
+      color: colors.textPrimary,
+      backgroundColor: colors.surface,
+    },
+    editButtonRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginTop: 4,
+    },
+    saveButton: {
+      flex: 1,
+      backgroundColor: colors.primary,
+      borderRadius: 6,
+      paddingVertical: 10,
+      alignItems: 'center',
+    },
+    saveButtonText: {
+      color: colors.onPrimary,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    cancelButton: {
+      flex: 1,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      paddingVertical: 10,
+      alignItems: 'center',
+    },
+    cancelButtonText: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    error: {
+      color: colors.danger,
+      fontSize: 12,
+    },
+    surgeSection: {
+      marginTop: 4,
+    },
+    slider: {
+      width: '100%',
+      height: 40,
+    },
+  });

@@ -1,9 +1,18 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Base application theme. -->
+    <!-- Base application theme. Must stay DayNight (not Light): RN's
+         useColorScheme() on Android resolves through AppCompatDelegate's
+         night-mode state, so forcing a Light-only parent here silently
+         breaks JS-level dark mode detection too, not just native chrome.
+         forceDarkAllowed=false is still set so Android's own automatic
+         content-inversion doesn't compete with src/theme/colors.ts's
+         intentional dark palette (that combination was the original bug:
+         an app with no real dark styling getting force-inverted into
+         unreadable low-contrast grays). -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
     </style>
 
 </resources>

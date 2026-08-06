@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {AppState, Pressable, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
@@ -19,11 +19,16 @@ import {
   requestOverlayPermission,
   setPreferredNavApp,
 } from '../native/FareOverlay';
+import {ThemeColors, useThemeColors} from '../theme/colors';
 
 const FARE_DISCLAIMER =
   'Final cost may vary. Do not use this figure to charge passengers. Only rely on your rideshare app final figure.';
 
 function BreakdownLines({breakdown}: {breakdown: FareBreakdown}) {
+  // Separate component, so it can't reach TripScreen's local `styles` --
+  // recomputing it here is cheap and keeps this component self-contained.
+  const colors = useThemeColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   return (
     <View style={styles.breakdown}>
       <Text style={styles.breakdownRow}>Base ${breakdown.base.toFixed(2)}</Text>
@@ -79,6 +84,8 @@ export default function TripScreen() {
   // invariant for the process lifetime, so picking a hook based on it never
   // changes the hook call order between renders.
   const tracking = isOverlaySupported ? useNativeTripTracking() : useTripTracking();
+  const colors = useThemeColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   useEffect(() => {
     if (!isOverlaySupported) {
@@ -147,26 +154,41 @@ export default function TripScreen() {
 
   const handleStart = async () => {
     setStartError(null);
-    const lat = Number(destLat);
-    const lng = Number(destLng);
 
-    if (destLat.trim() === '' || destLng.trim() === '' || Number.isNaN(lat) || Number.isNaN(lng)) {
-      setStartError('Enter a valid destination latitude and longitude.');
-      return;
+    // A destination is optional -- both fields blank means "track the
+    // running total only, no pre-trip estimate" (same as an intercept where
+    // the destination couldn't be parsed). Only reject genuinely invalid
+    // input (one field filled, or non-numeric).
+    const hasDestinationInput = destLat.trim() !== '' || destLng.trim() !== '';
+    let destination: GeoPoint | null = null;
+    if (hasDestinationInput) {
+      const lat = Number(destLat);
+      const lng = Number(destLng);
+      if (destLat.trim() === '' || destLng.trim() === '' || Number.isNaN(lat) || Number.isNaN(lng)) {
+        setStartError('Enter a valid destination latitude and longitude, or leave both blank to track without an estimate.');
+        return;
+      }
+      destination = {latitude: lat, longitude: lng};
     }
 
     try {
-      const origin = await getCurrentPosition();
-      const estimate = await estimateFareWithRouting(
-        activeRateCard,
-        origin,
-        {latitude: lat, longitude: lng},
-        surgeMultiplier,
-      );
-      setEstimatedTotal(estimate.total);
-      setEstimatedBreakdown(estimate.breakdown);
-      setEstimatedSource(estimate.source);
-      await tracking.start({latitude: lat, longitude: lng});
+      if (destination) {
+        const origin = await getCurrentPosition();
+        const estimate = await estimateFareWithRouting(
+          activeRateCard,
+          origin,
+          destination,
+          surgeMultiplier,
+        );
+        setEstimatedTotal(estimate.total);
+        setEstimatedBreakdown(estimate.breakdown);
+        setEstimatedSource(estimate.source);
+      } else {
+        setEstimatedTotal(null);
+        setEstimatedBreakdown(null);
+        setEstimatedSource(null);
+      }
+      await tracking.start(destination);
     } catch (err) {
       setStartError(
         err instanceof Error ? err.message : 'Failed to get current location.',
@@ -325,152 +347,157 @@ export default function TripScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 24,
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    marginBottom: 24,
-    textAlign: 'center',
-  },
-  form: {
-    gap: 8,
-  },
-  banner: {
-    backgroundColor: '#fef7e0',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-  },
-  bannerText: {
-    fontSize: 13,
-    color: '#5f5024',
-    marginBottom: 8,
-  },
-  bannerButton: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#e8a712',
-    borderRadius: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  bannerButtonText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  settingsSection: {
-    marginBottom: 16,
-  },
-  settingsLabel: {
-    fontSize: 13,
-    color: '#555',
-    marginBottom: 6,
-  },
-  navAppRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  navAppOption: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  navAppOptionSelected: {
-    borderColor: '#1a73e8',
-    backgroundColor: '#e8f0fe',
-  },
-  navAppOptionText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
-  linkButton: {
-    alignSelf: 'flex-start',
-  },
-  linkButtonText: {
-    fontSize: 13,
-    color: '#1a73e8',
-    fontWeight: '600',
-  },
-  mapPickerButton: {
-    borderWidth: 1,
-    borderColor: '#1a73e8',
-    borderRadius: 8,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  mapPickerButtonText: {
-    color: '#1a73e8',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  button: {
-    backgroundColor: '#1a73e8',
-    borderRadius: 8,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  stopButton: {
-    backgroundColor: '#d93025',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  error: {
-    color: '#d93025',
-    marginTop: 8,
-  },
-  disclaimer: {
-    fontSize: 11,
-    color: '#d93025',
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  breakdown: {
-    marginTop: 4,
-    alignItems: 'center',
-  },
-  breakdownRow: {
-    fontSize: 12,
-    color: '#777',
-  },
-  totals: {
-    alignItems: 'center',
-    gap: 8,
-  },
-  totalRow: {
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  totalLabel: {
-    fontSize: 14,
-    color: '#555',
-  },
-  totalValue: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  totalValueLarge: {
-    fontSize: 48,
-    fontWeight: '700',
-  },
-  meta: {
-    fontSize: 14,
-    color: '#777',
-    marginBottom: 16,
-  },
-});
+const createStyles = (colors: ThemeColors) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      padding: 24,
+      justifyContent: 'center',
+      backgroundColor: colors.background,
+    },
+    title: {
+      fontSize: 28,
+      fontWeight: '700',
+      marginBottom: 24,
+      textAlign: 'center',
+      color: colors.textPrimary,
+    },
+    form: {
+      gap: 8,
+    },
+    banner: {
+      backgroundColor: colors.bannerBg,
+      borderRadius: 8,
+      padding: 12,
+      marginBottom: 16,
+    },
+    bannerText: {
+      fontSize: 13,
+      color: colors.bannerText,
+      marginBottom: 8,
+    },
+    bannerButton: {
+      alignSelf: 'flex-start',
+      backgroundColor: colors.bannerButtonBg,
+      borderRadius: 6,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+    },
+    bannerButtonText: {
+      color: colors.bannerButtonText,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    settingsSection: {
+      marginBottom: 16,
+    },
+    settingsLabel: {
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginBottom: 6,
+    },
+    navAppRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 8,
+    },
+    navAppOption: {
+      flex: 1,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      paddingVertical: 10,
+      alignItems: 'center',
+    },
+    navAppOptionSelected: {
+      borderColor: colors.primary,
+      backgroundColor: colors.surfaceAlt,
+    },
+    navAppOptionText: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    linkButton: {
+      alignSelf: 'flex-start',
+    },
+    linkButtonText: {
+      fontSize: 13,
+      color: colors.primary,
+      fontWeight: '600',
+    },
+    mapPickerButton: {
+      borderWidth: 1,
+      borderColor: colors.primary,
+      borderRadius: 8,
+      paddingVertical: 12,
+      alignItems: 'center',
+      marginBottom: 16,
+    },
+    mapPickerButtonText: {
+      color: colors.primary,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    button: {
+      backgroundColor: colors.primary,
+      borderRadius: 8,
+      paddingVertical: 14,
+      alignItems: 'center',
+      marginTop: 8,
+    },
+    stopButton: {
+      backgroundColor: colors.danger,
+    },
+    buttonText: {
+      color: colors.onPrimary,
+      fontSize: 16,
+      fontWeight: '600',
+    },
+    error: {
+      color: colors.danger,
+      marginTop: 8,
+    },
+    disclaimer: {
+      fontSize: 11,
+      color: colors.disclaimerText,
+      fontWeight: '700',
+      textAlign: 'center',
+      marginTop: 8,
+    },
+    breakdown: {
+      marginTop: 4,
+      alignItems: 'center',
+    },
+    breakdownRow: {
+      fontSize: 12,
+      color: colors.textMuted,
+    },
+    totals: {
+      alignItems: 'center',
+      gap: 8,
+    },
+    totalRow: {
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    totalLabel: {
+      fontSize: 14,
+      color: colors.textSecondary,
+    },
+    totalValue: {
+      fontSize: 24,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    totalValueLarge: {
+      fontSize: 48,
+      fontWeight: '700',
+      color: colors.textPrimary,
+    },
+    meta: {
+      fontSize: 14,
+      color: colors.textMuted,
+      marginBottom: 16,
+    },
+  });

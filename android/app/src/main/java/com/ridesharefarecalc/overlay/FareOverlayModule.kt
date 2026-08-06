@@ -77,16 +77,22 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
         promise.resolve(hasFineLocationPermission())
     }
 
+    // destLat/destLng are nullable -- starting a trip without a destination
+    // is valid (running total only, no pre-trip estimate), the same as an
+    // intercept where DestinationParser couldn't parse one. FareTrackingService
+    // already handles absent extras this way (see requestInitialEstimate).
     @ReactMethod
-    fun startTrip(destLat: Double, destLng: Double, promise: Promise) {
+    fun startTrip(destLat: Double?, destLng: Double?, promise: Promise) {
         if (!hasFineLocationPermission()) {
             promise.reject("NO_LOCATION_PERMISSION", "ACCESS_FINE_LOCATION not granted")
             return
         }
 
         val intent = Intent(reactApplicationContext, FareTrackingService::class.java).apply {
-            putExtra(FareTrackingService.EXTRA_DEST_LAT, destLat)
-            putExtra(FareTrackingService.EXTRA_DEST_LNG, destLng)
+            if (destLat != null && destLng != null) {
+                putExtra(FareTrackingService.EXTRA_DEST_LAT, destLat)
+                putExtra(FareTrackingService.EXTRA_DEST_LNG, destLng)
+            }
         }
         ContextCompat.startForegroundService(reactApplicationContext, intent)
         promise.resolve(true)

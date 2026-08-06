@@ -76,13 +76,13 @@ export function useNativeTripTracking(): TripTracking {
     };
   }, [adoptSnapshot, applyLiveNumbers, markStopped]);
 
-  const start = useCallback(async (destination: GeoPoint): Promise<void> => {
+  const start = useCallback(async (destination: GeoPoint | null): Promise<void> => {
     const hasPermission = await requestLocationPermission();
     if (!hasPermission) {
       throw new Error('Location permission denied');
     }
     await requestNotificationPermission();
-    await startOverlayTrip(destination.latitude, destination.longitude);
+    await startOverlayTrip(destination?.latitude ?? null, destination?.longitude ?? null);
     setIsTracking(true);
     setDistanceKm(0);
     setElapsedMinutes(0);

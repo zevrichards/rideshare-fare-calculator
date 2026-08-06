@@ -5,7 +5,7 @@ interface FareOverlayNativeModule {
   hasOverlayPermission(): Promise<boolean>;
   requestOverlayPermission(): void;
   hasLocationPermission(): Promise<boolean>;
-  startTrip(destLat: number, destLng: number): Promise<boolean>;
+  startTrip(destLat: number | null, destLng: number | null): Promise<boolean>;
   stopTrip(): void;
   getActiveTrip(): Promise<TripSnapshot | null>;
   getPreferredNavApp(): Promise<string>;
@@ -66,8 +66,8 @@ export function requestOverlayPermission(): void {
 }
 
 export async function startOverlayTrip(
-  destLat: number,
-  destLng: number,
+  destLat: number | null,
+  destLng: number | null,
 ): Promise<boolean> {
   if (!nativeModule) {
     return false;
