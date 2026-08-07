@@ -76,3 +76,5 @@ src/config/apiKeys.ts
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+/__apks__

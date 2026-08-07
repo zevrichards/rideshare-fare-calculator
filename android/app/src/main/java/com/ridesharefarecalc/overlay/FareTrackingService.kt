@@ -43,6 +43,12 @@ class FareTrackingService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.ridesharefarecalc.overlay.action.STOP"
+        // Attaches a destination to a trip that's already running, e.g. once
+        // RideTriggerAccessibilityService's background geocoding lookup
+        // resolves (the trip itself starts immediately with no destination,
+        // rather than waiting on that network call). No-ops if the trip
+        // already ended before this lands.
+        const val ACTION_SET_DESTINATION = "com.ridesharefarecalc.overlay.action.SET_DESTINATION"
         const val EXTRA_DEST_LAT = "destLat"
         const val EXTRA_DEST_LNG = "destLng"
 
@@ -104,12 +110,17 @@ class FareTrackingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopTracking()
-        } else {
-            startTracking(intent)
+        when (intent?.action) {
+            ACTION_STOP -> stopTracking()
+            ACTION_SET_DESTINATION -> attachDestination(intent)
+            else -> startTracking(intent)
         }
         return START_NOT_STICKY
+    }
+
+    private fun attachDestination(intent: Intent?) {
+        if (!isTracking) return
+        requestInitialEstimate(intent)
     }
 
     private fun startTracking(intent: Intent?) {

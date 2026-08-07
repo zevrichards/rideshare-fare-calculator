@@ -5,6 +5,8 @@ interface FareOverlayNativeModule {
   hasOverlayPermission(): Promise<boolean>;
   requestOverlayPermission(): void;
   hasLocationPermission(): Promise<boolean>;
+  hasAccessibilityServiceEnabled(): Promise<boolean>;
+  requestAccessibilityServiceEnable(): void;
   startTrip(destLat: number | null, destLng: number | null): Promise<boolean>;
   stopTrip(): void;
   getActiveTrip(): Promise<TripSnapshot | null>;
@@ -64,6 +66,22 @@ export async function hasOverlayPermission(): Promise<boolean> {
 
 export function requestOverlayPermission(): void {
   nativeModule?.requestOverlayPermission();
+}
+
+// Auto-detects "Start Ride" in TTRS/Allridi via an opt-in Accessibility
+// Service (see RideTriggerAccessibilityService.kt) -- entirely optional,
+// every other trip-start path keeps working regardless of this. Unlike
+// other permissions, the OS only ever grants this via its own Settings
+// screen, never a runtime dialog.
+export async function hasAccessibilityServiceEnabled(): Promise<boolean> {
+  if (!nativeModule) {
+    return false;
+  }
+  return nativeModule.hasAccessibilityServiceEnabled();
+}
+
+export function requestAccessibilityServiceEnable(): void {
+  nativeModule?.requestAccessibilityServiceEnable();
 }
 
 export async function startOverlayTrip(

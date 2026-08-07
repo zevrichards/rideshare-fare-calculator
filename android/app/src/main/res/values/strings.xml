@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">RideshareFareCalc</string>
+    <string name="accessibility_service_description">Detects when you tap Start Ride in the TTRS or Allridi driver app, so RideshareFareCalc can start fare tracking automatically -- including reading the destination address if it\'s shown on that same screen, to estimate the fare. Only watches these two specific apps; does not see or interact with anything else on your device.</string>
 </resources>

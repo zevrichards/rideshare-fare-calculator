@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Scoped strictly to TTRS and Allridi's driver apps: packageNames means
+  this service never receives events from any other app. Observe-only, no
+  gesture/action-injection capability is requested, only event listening +
+  reading the two apps' own screen content (canRetrieveWindowContent).
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewClicked"
+    android:packageNames="production.ttrides.driver,product.allridi.driver"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100"
+    android:description="@string/accessibility_service_description" />

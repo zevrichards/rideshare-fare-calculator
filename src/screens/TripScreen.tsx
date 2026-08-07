@@ -17,12 +17,14 @@ import MapPickerScreen from './MapPickerScreen';
 import OverlaySizeSection from './OverlaySizeSection';
 import {
   getPreferredNavApp,
+  hasAccessibilityServiceEnabled,
   hasOverlayPermission,
   isOverlaySupported,
   mirrorSelectedRateCard,
   NAV_APPS,
   NavAppPackage,
   openDefaultAppSettings,
+  requestAccessibilityServiceEnable,
   requestOverlayPermission,
   setPreferredNavApp,
 } from '../native/FareOverlay';
@@ -85,6 +87,8 @@ export default function TripScreen() {
   } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [overlayPermitted, setOverlayPermitted] = useState(false);
+  const [accessibilityServiceEnabled, setAccessibilityServiceEnabled] =
+    useState(false);
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
     NAV_APPS.WAZE,
   );
@@ -106,6 +110,7 @@ export default function TripScreen() {
 
     const checkPermission = () => {
       hasOverlayPermission().then(setOverlayPermitted);
+      hasAccessibilityServiceEnabled().then(setAccessibilityServiceEnabled);
     };
     checkPermission();
     getPreferredNavApp().then(setPreferredNavAppState);
@@ -281,6 +286,21 @@ export default function TripScreen() {
           </Text>
           <Pressable style={styles.bannerButton} onPress={requestOverlayPermission}>
             <Text style={styles.bannerButtonText}>Enable Floating Overlay</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {!tracking.isTracking && isOverlaySupported && !accessibilityServiceEnabled && (
+        <View style={styles.banner}>
+          <Text style={styles.bannerText}>
+            Optionally, auto-start fare tracking when you tap Start Ride in
+            TTRS or Allridi -- including the destination if it's shown on
+            that screen. Enable the Accessibility Service to turn this on.
+          </Text>
+          <Pressable
+            style={styles.bannerButton}
+            onPress={requestAccessibilityServiceEnable}>
+            <Text style={styles.bannerButtonText}>Enable Auto-Start</Text>
           </Pressable>
         </View>
       )}

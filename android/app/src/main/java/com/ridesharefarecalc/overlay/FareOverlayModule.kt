@@ -77,6 +77,30 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
         promise.resolve(hasFineLocationPermission())
     }
 
+    // An AccessibilityService can't be granted via a normal permission
+    // dialog -- the OS only ever enables one through its own Settings
+    // screen, which functions as this feature's whole opt-in toggle (see
+    // RideTriggerAccessibilityService). This is the standard way an app
+    // self-checks whether its own service is currently on.
+    @ReactMethod
+    fun hasAccessibilityServiceEnabled(promise: Promise) {
+        val expectedComponent =
+            "${reactApplicationContext.packageName}/${RideTriggerAccessibilityService::class.java.name}"
+        val enabledServices = Settings.Secure.getString(
+            reactApplicationContext.contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ) ?: ""
+        val isEnabled = enabledServices.split(':').any { it.equals(expectedComponent, ignoreCase = true) }
+        promise.resolve(isEnabled)
+    }
+
+    @ReactMethod
+    fun requestAccessibilityServiceEnable() {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        reactApplicationContext.startActivity(intent)
+    }
+
     // destLat/destLng are nullable -- starting a trip without a destination
     // is valid (running total only, no pre-trip estimate), the same as an
     // intercept where DestinationParser couldn't parse one. FareTrackingService
