@@ -3,16 +3,23 @@ import {AppState, Pressable, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
 import {estimateFareWithRouting} from '../lib/routing';
-import {getRateCards, RateCard, TTRS_RATE_CARD} from '../lib/rateCards';
+import {
+  getRateCards,
+  RateCard,
+  setSelectedRateCardId,
+  TTRS_RATE_CARD,
+} from '../lib/rateCards';
 import {useTripTracking} from '../hooks/useTripTracking';
 import {useNativeTripTracking} from '../hooks/useNativeTripTracking';
 import RateCardSection from './RateCardSection';
 import DestinationSearch from './DestinationSearch';
 import MapPickerScreen from './MapPickerScreen';
+import OverlaySizeSection from './OverlaySizeSection';
 import {
   getPreferredNavApp,
   hasOverlayPermission,
   isOverlaySupported,
+  mirrorSelectedRateCard,
   NAV_APPS,
   NavAppPackage,
   openDefaultAppSettings,
@@ -65,13 +72,17 @@ function getCurrentPosition(): Promise<GeoPoint> {
 export default function TripScreen() {
   const [destLat, setDestLat] = useState('');
   const [destLng, setDestLng] = useState('');
-  const [estimatedTotal, setEstimatedTotal] = useState<number | null>(null);
-  const [estimatedBreakdown, setEstimatedBreakdown] = useState<FareBreakdown | null>(
-    null,
-  );
-  const [estimatedSource, setEstimatedSource] = useState<
-    'routing' | 'straight-line' | null
-  >(null);
+  // The raw estimate inputs, not the computed breakdown -- so switching rate
+  // cards mid-trip (see handleSwitchRateCard) can recompute the Estimated
+  // Total against the same distance/duration without a fresh API call.
+  // estimatedBreakdown/estimatedTotal below are derived from this every
+  // render, the same way runningBreakdown already derives from
+  // tracking.distanceKm/elapsedMinutes.
+  const [estimatedInputs, setEstimatedInputs] = useState<{
+    distanceKm: number;
+    minutes: number;
+    source: 'routing' | 'straight-line' | null;
+  } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [overlayPermitted, setOverlayPermitted] = useState(false);
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
@@ -80,6 +91,7 @@ export default function TripScreen() {
   const [activeRateCard, setActiveRateCard] = useState<RateCard>(TTRS_RATE_CARD);
   const [surgeMultiplier, setSurgeMultiplierState] = useState(1);
   const [showMapPicker, setShowMapPicker] = useState(false);
+  const [rateCards, setRateCards] = useState<RateCard[]>([]);
   // isOverlaySupported is a module-level constant (Platform.OS === 'android'),
   // invariant for the process lifetime, so picking a hook based on it never
   // changes the hook call order between renders.
@@ -109,6 +121,13 @@ export default function TripScreen() {
     };
   }, []);
 
+  // Needed for the mid-trip rate-card switch buttons (see
+  // handleSwitchRateCard) -- RateCardSection loads its own copy for the idle
+  // screen, but it doesn't render while tracking.isTracking is true.
+  useEffect(() => {
+    getRateCards().then(setRateCards);
+  }, []);
+
   // Adopts a trip that's already running when this screen mounts/resumes --
   // only useNativeTripTracking (Android) ever sets these; useTripTracking
   // (iOS) always reports them as null. RateCardSection is the only other
@@ -119,7 +138,6 @@ export default function TripScreen() {
     if (!tracking.adoptedRateCardId) {
       return;
     }
-    const surge = tracking.adoptedSurgeMultiplier ?? 1;
     if (tracking.adoptedSurgeMultiplier !== null) {
       setSurgeMultiplierState(tracking.adoptedSurgeMultiplier);
     }
@@ -131,18 +149,14 @@ export default function TripScreen() {
       setActiveRateCard(matched);
       // Native ships the estimate's distance/time inputs (both null together
       // if the intercept never got a destination to estimate from), not a
-      // pre-computed total -- so this always produces a real breakdown, the
-      // same way the Running Total below always does.
+      // pre-computed total -- store the raw inputs, not a computed
+      // breakdown, so a mid-trip rate-card switch can recompute this too.
       if (tracking.adoptedEstimatedDistanceKm !== null && tracking.adoptedEstimatedMinutes !== null) {
-        const breakdown = calculateFareBreakdown(
-          matched,
-          tracking.adoptedEstimatedDistanceKm,
-          tracking.adoptedEstimatedMinutes,
-          surge,
-        );
-        setEstimatedTotal(breakdown.total);
-        setEstimatedBreakdown(breakdown);
-        setEstimatedSource(null);
+        setEstimatedInputs({
+          distanceKm: tracking.adoptedEstimatedDistanceKm,
+          minutes: tracking.adoptedEstimatedMinutes,
+          source: null,
+        });
       }
     });
   }, [
@@ -180,13 +194,13 @@ export default function TripScreen() {
           destination,
           surgeMultiplier,
         );
-        setEstimatedTotal(estimate.total);
-        setEstimatedBreakdown(estimate.breakdown);
-        setEstimatedSource(estimate.source);
+        setEstimatedInputs({
+          distanceKm: estimate.distanceKm,
+          minutes: estimate.minutes,
+          source: estimate.source,
+        });
       } else {
-        setEstimatedTotal(null);
-        setEstimatedBreakdown(null);
-        setEstimatedSource(null);
+        setEstimatedInputs(null);
       }
       await tracking.start(destination);
     } catch (err) {
@@ -205,6 +219,16 @@ export default function TripScreen() {
     tracking.stop();
   };
 
+  // Switching mid-trip (not just before Start Trip) -- write-through to
+  // AsyncStorage + the native mirror same as RateCardSection's handleSelect,
+  // so a resumed/reopened app and the floating overlay both see the change.
+  // activeRateCard itself is what makes both breakdowns below recompute.
+  const handleSwitchRateCard = (card: RateCard) => {
+    setActiveRateCard(card);
+    setSelectedRateCardId(card.id);
+    mirrorSelectedRateCard(card.id);
+  };
+
   const runningBreakdown = calculateFareBreakdown(
     activeRateCard,
     tracking.distanceKm,
@@ -212,6 +236,16 @@ export default function TripScreen() {
     surgeMultiplier,
   );
   const runningTotal = runningBreakdown.total;
+
+  const estimatedBreakdown = estimatedInputs
+    ? calculateFareBreakdown(
+        activeRateCard,
+        estimatedInputs.distanceKm,
+        estimatedInputs.minutes,
+        surgeMultiplier,
+      )
+    : null;
+  const estimatedTotal = estimatedBreakdown?.total ?? null;
 
   if (showMapPicker) {
     return (
@@ -288,6 +322,8 @@ export default function TripScreen() {
         </View>
       )}
 
+      {!tracking.isTracking && isOverlaySupported && <OverlaySizeSection />}
+
       {!tracking.isTracking && (
         <DestinationSearch
           onSelect={result => {
@@ -319,11 +355,27 @@ export default function TripScreen() {
         <View style={styles.totals}>
           <Text style={styles.disclaimer}>{FARE_DISCLAIMER}</Text>
 
+          {rateCards.length > 1 && (
+            <View style={styles.navAppRow}>
+              {rateCards.map(card => (
+                <Pressable
+                  key={card.id}
+                  style={[
+                    styles.navAppOption,
+                    activeRateCard.id === card.id && styles.navAppOptionSelected,
+                  ]}
+                  onPress={() => handleSwitchRateCard(card)}>
+                  <Text style={styles.navAppOptionText}>{card.name}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
           {estimatedTotal !== null && estimatedBreakdown !== null && (
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>
                 Estimated Total
-                {estimatedSource === 'straight-line' ? ' (approx.)' : ''}
+                {estimatedInputs?.source === 'straight-line' ? ' (approx.)' : ''}
               </Text>
               <Text style={styles.totalValue}>${estimatedTotal.toFixed(2)}</Text>
               <BreakdownLines breakdown={estimatedBreakdown} />

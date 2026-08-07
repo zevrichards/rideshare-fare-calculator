@@ -141,6 +141,14 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
         RateCardPreference.setSurgeMultiplier(reactApplicationContext, value)
     }
 
+    // Mirrors the user's overlay-size preference the same write-through way
+    // as the rate card/surge above -- FareTrackingService reads it fresh
+    // each trip when building FareOverlayView.
+    @ReactMethod
+    fun setOverlayScale(value: Double) {
+        RateCardPreference.setOverlayScale(reactApplicationContext, value)
+    }
+
     @ReactMethod
     fun getPreferredNavApp(promise: Promise) {
         promise.resolve(NavPreference.getPreferredPackage(reactApplicationContext))

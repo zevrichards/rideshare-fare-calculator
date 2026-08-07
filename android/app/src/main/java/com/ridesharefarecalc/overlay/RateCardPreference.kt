@@ -17,6 +17,7 @@ object RateCardPreference {
     private const val KEY_RATE_CARD_PREFIX = "rate_card_"
     private const val KEY_SELECTED_RATE_CARD_ID = "selected_rate_card_id"
     private const val KEY_SURGE_MULTIPLIER = "surge_multiplier"
+    private const val KEY_OVERLAY_SCALE = "overlay_scale"
 
     fun getRateCard(context: Context, id: String): RateCard {
         val default = RateCard.DEFAULTS.firstOrNull { it.id == id } ?: RateCard.TTRS
@@ -60,6 +61,21 @@ object RateCardPreference {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putFloat(KEY_SURGE_MULTIPLIER, value.toFloat())
+            .apply()
+    }
+
+    // Multiplier applied to the floating overlay's text size and padding
+    // (see FareOverlayView) -- read fresh each trip, same as the rate card
+    // and surge multiplier above.
+    fun getOverlayScale(context: Context): Double {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getFloat(KEY_OVERLAY_SCALE, 1.0f).toDouble()
+    }
+
+    fun setOverlayScale(context: Context, value: Double) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_OVERLAY_SCALE, value.toFloat())
             .apply()
     }
 }

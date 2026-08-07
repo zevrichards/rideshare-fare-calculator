@@ -70,7 +70,6 @@ class FareTrackingService : Service() {
     private var overlayView: FareOverlayView? = null
     private val tickHandler = Handler(Looper.getMainLooper())
 
-    private var estimatedTotal: Double? = null
     private var estimatedDistanceKm: Double? = null
     private var estimatedMinutes: Double? = null
     private var lastLocation: Location? = null
@@ -116,7 +115,6 @@ class FareTrackingService : Service() {
     private fun startTracking(intent: Intent?) {
         distanceKm = 0.0
         lastLocation = null
-        estimatedTotal = null
         estimatedDistanceKm = null
         estimatedMinutes = null
         startTimeMs = System.currentTimeMillis()
@@ -152,6 +150,7 @@ class FareTrackingService : Service() {
                 context = this,
                 onTap = { bringAppToForeground() },
                 onStop = { stopTracking() },
+                scale = RateCardPreference.getOverlayScale(this),
             ).also { it.show() }
         } catch (_: SecurityException) {
             overlayView = null
@@ -204,10 +203,12 @@ class FareTrackingService : Service() {
         }.start()
     }
 
+    // Stores the estimate's raw inputs only, not a computed total -- so a
+    // mid-trip rate-card switch (see updateOverlay) can recompute this
+    // against the new card instead of showing a stale number.
     private fun applyEstimate(distanceKm: Double, minutes: Double) {
         estimatedDistanceKm = distanceKm
         estimatedMinutes = minutes
-        estimatedTotal = FareMath.calculateFare(activeRateCard, distanceKm, minutes, surgeMultiplier)
     }
 
     private fun onNewLocation(location: Location) {
@@ -225,10 +226,23 @@ class FareTrackingService : Service() {
     }
 
     private fun updateOverlay() {
+        // Re-read fresh every tick (not just once in startTracking()) so a
+        // mid-trip rate-card/surge switch from the JS side -- which writes
+        // through to this same SharedPreferences store -- reaches the
+        // overlay and notification within about a second, matching how the
+        // JS breakdown screen updates immediately when it makes the switch.
+        activeRateCard = RateCardPreference.getSelectedRateCard(this)
+        surgeMultiplier = RateCardPreference.getSurgeMultiplier(this)
+
         val elapsedMinutes = (System.currentTimeMillis() - startTimeMs) / 60000.0
         val runningTotal = FareMath.calculateFare(activeRateCard, distanceKm, elapsedMinutes, surgeMultiplier)
+        val currentEstimatedTotal = if (estimatedDistanceKm != null && estimatedMinutes != null) {
+            FareMath.calculateFare(activeRateCard, estimatedDistanceKm!!, estimatedMinutes!!, surgeMultiplier)
+        } else {
+            null
+        }
         try {
-            overlayView?.update(estimatedTotal, runningTotal, distanceKm, elapsedMinutes)
+            overlayView?.update(currentEstimatedTotal, runningTotal, distanceKm, elapsedMinutes, activeRateCard.name)
         } catch (_: SecurityException) {
             overlayView = null
         }

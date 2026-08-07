@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -26,11 +27,13 @@ class FareOverlayView(
     private val context: Context,
     private val onTap: () -> Unit,
     private val onStop: () -> Unit,
+    private val scale: Double = 1.0,
 ) {
 
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
+    private val rateCardText: TextView
     private val estimatedText: TextView
     private val runningText: TextView
     private val metaText: TextView
@@ -53,25 +56,38 @@ class FareOverlayView(
 
     init {
         val density = context.resources.displayMetrics.density
-        fun dp(value: Int) = (value * density).toInt()
+        // scale multiplies dp too (not just text) so padding/corner-radius
+        // grow proportionally with the user's overlay-size preference,
+        // rather than just the text getting bigger inside a fixed-size box.
+        fun dp(value: Int) = (value * density * scale).toInt()
+        // COMPLEX_UNIT_SP (not raw pixels, which is what the `textSize`
+        // property sets) so this also respects the system font-size
+        // accessibility setting, not just our own scale preference.
+        fun setSp(view: TextView, value: Float) =
+            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, (value * scale).toFloat())
 
+        rateCardText = TextView(context).apply {
+            setTextColor(Color.parseColor("#99FFFFFF"))
+            setSp(this, 10f)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
         estimatedText = TextView(context).apply {
             setTextColor(Color.parseColor("#CCFFFFFF"))
-            textSize = 11f
+            setSp(this, 11f)
         }
         runningText = TextView(context).apply {
             setTextColor(Color.WHITE)
-            textSize = 20f
+            setSp(this, 20f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
         metaText = TextView(context).apply {
             setTextColor(Color.parseColor("#99FFFFFF"))
-            textSize = 10f
+            setSp(this, 10f)
         }
         val stopButton = TextView(context).apply {
             text = "✕"
             setTextColor(Color.WHITE)
-            textSize = 14f
+            setSp(this, 14f)
             setPadding(dp(8), dp(4), dp(8), dp(4))
             isClickable = true
             setOnClickListener { onStop() }
@@ -79,6 +95,7 @@ class FareOverlayView(
 
         val textStack = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            addView(rateCardText)
             addView(estimatedText)
             addView(runningText)
             addView(metaText)
@@ -156,7 +173,14 @@ class FareOverlayView(
         isAttached = true
     }
 
-    fun update(estimatedTotal: Double?, runningTotal: Double, distanceKm: Double, elapsedMinutes: Double) {
+    fun update(
+        estimatedTotal: Double?,
+        runningTotal: Double,
+        distanceKm: Double,
+        elapsedMinutes: Double,
+        rateCardName: String,
+    ) {
+        rateCardText.text = rateCardName
         estimatedText.text = if (estimatedTotal != null) {
             "Est \$${"%.2f".format(estimatedTotal)}"
         } else {

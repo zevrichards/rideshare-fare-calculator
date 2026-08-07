@@ -1,9 +1,11 @@
 import {GOOGLE_ROUTES_API_KEY} from '../config/apiKeys';
 import {
+  ASSUMED_AVERAGE_SPEED_KMH,
   calculateFareBreakdown,
-  estimateFareBreakdown,
   FareBreakdown,
   GeoPoint,
+  haversineDistanceKm,
+  STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR,
 } from './fare';
 import {RateCard} from './rateCards';
 
@@ -11,10 +13,16 @@ const COMPUTE_ROUTES_URL =
   'https://routes.googleapis.com/directions/v2:computeRoutes';
 const REQUEST_TIMEOUT_MS = 8000;
 
+// distanceKm/minutes are the raw inputs behind `breakdown` -- exposed so a
+// caller can recompute a fresh breakdown for a different rate card (e.g. the
+// driver switches TTRS/Allridi mid-trip) without needing a new Routes API
+// call or GPS fix.
 export interface FareEstimate {
   total: number;
   source: 'routing' | 'straight-line';
   breakdown: FareBreakdown;
+  distanceKm: number;
+  minutes: number;
 }
 
 interface RouteEstimate {
@@ -73,6 +81,19 @@ async function fetchRouteEstimate(
   }
 }
 
+function straightLineEstimate(
+  rateCard: RateCard,
+  origin: GeoPoint,
+  destination: GeoPoint,
+  surgeMultiplier: number,
+): FareEstimate {
+  const distanceKm =
+    haversineDistanceKm(origin, destination) * STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR;
+  const minutes = (distanceKm / ASSUMED_AVERAGE_SPEED_KMH) * 60;
+  const breakdown = calculateFareBreakdown(rateCard, distanceKm, minutes, surgeMultiplier);
+  return {total: breakdown.total, source: 'straight-line', breakdown, distanceKm, minutes};
+}
+
 // Tries real road distance via the Routes API; falls back to the
 // straight-line*1.3 estimate (see fare.ts) if no key is configured or the
 // request fails for any reason -- this must never throw, since it sits in
@@ -84,16 +105,14 @@ export async function estimateFareWithRouting(
   surgeMultiplier: number = 1,
 ): Promise<FareEstimate> {
   if (!GOOGLE_ROUTES_API_KEY) {
-    const breakdown = estimateFareBreakdown(rateCard, origin, destination, surgeMultiplier);
-    return {total: breakdown.total, source: 'straight-line', breakdown};
+    return straightLineEstimate(rateCard, origin, destination, surgeMultiplier);
   }
 
   try {
     const {distanceKm, durationMinutes} = await fetchRouteEstimate(origin, destination);
     const breakdown = calculateFareBreakdown(rateCard, distanceKm, durationMinutes, surgeMultiplier);
-    return {total: breakdown.total, source: 'routing', breakdown};
+    return {total: breakdown.total, source: 'routing', breakdown, distanceKm, minutes: durationMinutes};
   } catch {
-    const breakdown = estimateFareBreakdown(rateCard, origin, destination, surgeMultiplier);
-    return {total: breakdown.total, source: 'straight-line', breakdown};
+    return straightLineEstimate(rateCard, origin, destination, surgeMultiplier);
   }
 }

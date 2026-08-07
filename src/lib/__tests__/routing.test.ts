@@ -4,6 +4,20 @@ describe('estimateFareWithRouting', () => {
   const origin = {latitude: 0, longitude: 0};
   const destination = {latitude: 0, longitude: 1};
 
+  function expectedStraightLine(rateCard: any, surge = 1) {
+    const {
+      calculateFareBreakdown,
+      haversineDistanceKm,
+      STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR,
+      ASSUMED_AVERAGE_SPEED_KMH,
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+    } = require('../fare');
+    const distanceKm = haversineDistanceKm(origin, destination) * STRAIGHT_LINE_DISTANCE_FUDGE_FACTOR;
+    const minutes = (distanceKm / ASSUMED_AVERAGE_SPEED_KMH) * 60;
+    const breakdown = calculateFareBreakdown(rateCard, distanceKm, minutes, surge);
+    return {total: breakdown.total, source: 'straight-line', breakdown, distanceKm, minutes};
+  }
+
   beforeEach(() => {
     jest.resetModules();
   });
@@ -19,13 +33,11 @@ describe('estimateFareWithRouting', () => {
     (globalThis as any).fetch = fetchSpy;
 
     const {estimateFareWithRouting} = require('../routing');
-    const {estimateFareBreakdown} = require('../fare');
 
     const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
-    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, origin, destination);
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
+    expect(result).toEqual(expectedStraightLine(TTRS_RATE_CARD));
   });
 
   it('uses road distance and traffic-aware duration from the Routes API when the request succeeds', async () => {
@@ -44,7 +56,13 @@ describe('estimateFareWithRouting', () => {
     // 600s = 10 minutes
     const breakdown = calculateFareBreakdown(TTRS_RATE_CARD, 12, 10);
 
-    expect(result).toEqual({total: breakdown.total, source: 'routing', breakdown});
+    expect(result).toEqual({
+      total: breakdown.total,
+      source: 'routing',
+      breakdown,
+      distanceKm: 12,
+      minutes: 10,
+    });
     expect(breakdown.timeCharge).toBeGreaterThan(0);
   });
 
@@ -89,7 +107,13 @@ describe('estimateFareWithRouting', () => {
     );
     const breakdown = calculateFareBreakdown(ALLRIDI_RATE_CARD, 12, 10, 1.2);
 
-    expect(result).toEqual({total: breakdown.total, source: 'routing', breakdown});
+    expect(result).toEqual({
+      total: breakdown.total,
+      source: 'routing',
+      breakdown,
+      distanceKm: 12,
+      minutes: 10,
+    });
   });
 
   it('falls back to the straight-line estimate on a non-OK response', async () => {
@@ -99,12 +123,10 @@ describe('estimateFareWithRouting', () => {
     (globalThis as any).fetch = jest.fn().mockResolvedValue({ok: false, status: 403});
 
     const {estimateFareWithRouting} = require('../routing');
-    const {estimateFareBreakdown} = require('../fare');
 
     const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
-    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, origin, destination);
 
-    expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
+    expect(result).toEqual(expectedStraightLine(TTRS_RATE_CARD));
   });
 
   it('falls back to the straight-line estimate when distance data is missing', async () => {
@@ -117,12 +139,10 @@ describe('estimateFareWithRouting', () => {
     });
 
     const {estimateFareWithRouting} = require('../routing');
-    const {estimateFareBreakdown} = require('../fare');
 
     const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
-    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, origin, destination);
 
-    expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
+    expect(result).toEqual(expectedStraightLine(TTRS_RATE_CARD));
   });
 
   it('falls back to the straight-line estimate when duration is missing', async () => {
@@ -135,12 +155,10 @@ describe('estimateFareWithRouting', () => {
     });
 
     const {estimateFareWithRouting} = require('../routing');
-    const {estimateFareBreakdown} = require('../fare');
 
     const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
-    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, origin, destination);
 
-    expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
+    expect(result).toEqual(expectedStraightLine(TTRS_RATE_CARD));
   });
 
   it('falls back to the straight-line estimate when the network request throws', async () => {
@@ -150,11 +168,9 @@ describe('estimateFareWithRouting', () => {
     (globalThis as any).fetch = jest.fn().mockRejectedValue(new Error('network down'));
 
     const {estimateFareWithRouting} = require('../routing');
-    const {estimateFareBreakdown} = require('../fare');
 
     const result = await estimateFareWithRouting(TTRS_RATE_CARD, origin, destination);
-    const breakdown = estimateFareBreakdown(TTRS_RATE_CARD, origin, destination);
 
-    expect(result).toEqual({total: breakdown.total, source: 'straight-line', breakdown});
+    expect(result).toEqual(expectedStraightLine(TTRS_RATE_CARD));
   });
 });

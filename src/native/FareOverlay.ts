@@ -14,6 +14,7 @@ interface FareOverlayNativeModule {
   setSelectedRateCard(id: string): void;
   setRateCard(cardJson: string): void;
   setSurgeMultiplier(value: number): void;
+  setOverlayScale(value: number): void;
   addListener(eventName: string): void;
   removeListeners(count: number): void;
 }
@@ -118,6 +119,10 @@ export function mirrorRateCard(card: RateCard): void {
 
 export function mirrorSurgeMultiplier(value: number): void {
   nativeModule?.setSurgeMultiplier(value);
+}
+
+export function mirrorOverlayScale(value: number): void {
+  nativeModule?.setOverlayScale(value);
 }
 
 export function subscribeToTripCompleted(
