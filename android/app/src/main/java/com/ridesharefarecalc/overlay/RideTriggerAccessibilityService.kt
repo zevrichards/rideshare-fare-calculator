@@ -2,6 +2,7 @@ package com.ridesharefarecalc.overlay
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.ridesharefarecalc.BuildConfig
@@ -29,6 +30,14 @@ import com.ridesharefarecalc.BuildConfig
 class RideTriggerAccessibilityService : AccessibilityService() {
 
     companion object {
+        // Temporary diagnostic logging (v0.1.1) -- the service reportedly
+        // didn't fire on either app on a real ride. This TAG lets us confirm,
+        // via `adb logcat -s RideTrigger`, whether the service is even
+        // receiving click events at all inside these apps (any button, not
+        // just Start Ride, since packageNames scopes the whole app) before
+        // chasing narrower theories.
+        private const val TAG = "RideTrigger"
+
         private const val START_RIDE_BTN_ID = "driverStartRideBtn"
         private const val DROP_ADDRESS_ID = "textViewCustomerDropAddress"
 
@@ -38,20 +47,33 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         )
     }
 
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        Log.d(TAG, "onServiceConnected")
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) return
         val packageName = event.packageName?.toString() ?: return
         val rateCardId = RATE_CARD_ID_BY_PACKAGE[packageName] ?: return
 
-        val source = event.source ?: return
-        val isStartRideClick = source.viewIdResourceName == "$packageName:id/$START_RIDE_BTN_ID"
-        source.recycle()
+        val source = event.source
+        val viewId = source?.viewIdResourceName
+        Log.d(TAG, "click pkg=$packageName viewId=$viewId class=${event.className}")
+        val isStartRideClick = viewId == "$packageName:id/$START_RIDE_BTN_ID"
+        source?.recycle()
         if (!isStartRideClick) return
 
+        Log.d(TAG, "Start Ride click matched, package=$packageName")
+
         // Guards against double-starting if the event somehow fires twice.
-        if (FareTrackingService.activeSnapshot != null) return
+        if (FareTrackingService.activeSnapshot != null) {
+            Log.d(TAG, "Ignoring: a trip is already active")
+            return
+        }
 
         val dropAddress = findDropAddress(packageName)
+        Log.d(TAG, "dropAddress=$dropAddress")
 
         // Set before starting so the very first tick already uses the right
         // card -- matches which app the click came from, not whatever was
@@ -86,10 +108,14 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // ACTION_SET_DESTINATION rather than waiting to start tracking at all.
     private fun geocodeAndAttach(address: String) {
         val apiKey = BuildConfig.GOOGLE_ROUTES_API_KEY
-        if (apiKey.isEmpty()) return
+        if (apiKey.isEmpty()) {
+            Log.d(TAG, "geocodeAndAttach: no API key configured, skipping")
+            return
+        }
 
         Thread {
             val location = PlacesApiClient.searchText(address, apiKey)
+            Log.d(TAG, "geocodeAndAttach: resolved=$location")
             if (location != null) {
                 val intent = Intent(this, FareTrackingService::class.java).apply {
                     action = FareTrackingService.ACTION_SET_DESTINATION

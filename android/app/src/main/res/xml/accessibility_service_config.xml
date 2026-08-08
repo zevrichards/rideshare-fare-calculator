@@ -4,11 +4,18 @@
   this service never receives events from any other app. Observe-only, no
   gesture/action-injection capability is requested, only event listening +
   reading the two apps' own screen content (canRetrieveWindowContent).
+
+  flagReportViewIds is required for AccessibilityNodeInfo.viewIdResourceName
+  (and AccessibilityEvent.source.viewIdResourceName) to ever return a real
+  value instead of null; it's a separate opt-in from canRetrieveWindowContent.
+  Without it, our view-id matching in RideTriggerAccessibilityService can
+  never match anything, on any device.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeViewClicked"
+    android:accessibilityFeedbackType="feedbackGeneric"
     android:packageNames="production.ttrides.driver,product.allridi.driver"
-    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:notificationTimeout="100"
     android:description="@string/accessibility_service_description" />
