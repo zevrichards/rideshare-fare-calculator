@@ -74,16 +74,21 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         val contentDesc = source?.contentDescription
         logBoth("click pkg=$packageName viewId=$viewId text=$text desc=$contentDesc class=${event.className}")
         val isStartRideClick = viewId == "$packageName:id/$START_RIDE_BTN_ID"
-        source?.recycle()
 
         // The clicked view itself carries no identifying info (no id, no
         // text, no description) -- likely a custom touch/gesture wrapper
-        // (e.g. a swipe-to-confirm container). Dump nearby on-screen text
-        // instead, so we can identify which screen/action this was from the
-        // log alone, without needing the clicked view to be self-describing.
+        // (e.g. a swipe-to-confirm container). Climb the node's own parent
+        // chain instead of re-querying rootInActiveWindow -- a fresh window
+        // query can race with a screen transition the click itself triggers
+        // and come back null (confirmed: "(no root)" seen on a real device
+        // right as this exact kind of click fired), whereas walking up from
+        // the node reference we already have doesn't depend on that query.
         if (viewId == null && text == null && contentDesc == null) {
+            logBoth("  ancestors: ${describeAncestors(source)}")
             logBoth("  screen context: ${describeScreen()}")
         }
+
+        source?.recycle()
 
         if (!isStartRideClick) return
 
@@ -111,6 +116,27 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         if (!dropAddress.isNullOrBlank()) {
             geocodeAndAttach(dropAddress)
         }
+    }
+
+    // Climbs from the clicked node's own parent reference (not a fresh
+    // window query) collecting each ancestor's id/text/desc/class. More
+    // reliable than describeScreen() right at the moment of a click that
+    // triggers its own screen transition.
+    private fun describeAncestors(start: AccessibilityNodeInfo?): String {
+        val parts = mutableListOf<String>()
+        var current = start?.parent
+        var depth = 0
+        while (current != null && depth < 8) {
+            parts.add(
+                "[${current.className} id=${current.viewIdResourceName} " +
+                    "text=${current.text} desc=${current.contentDescription}]",
+            )
+            val next = current.parent
+            current.recycle()
+            current = next
+            depth++
+        }
+        return if (parts.isEmpty()) "(no parent)" else parts.joinToString(" < ")
     }
 
     // Walks the current window's node tree collecting visible text, capped
