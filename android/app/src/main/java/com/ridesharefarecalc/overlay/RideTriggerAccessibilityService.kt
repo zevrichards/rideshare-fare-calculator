@@ -69,7 +69,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         val source = event.source
         val viewId = source?.viewIdResourceName
-        logBoth("click pkg=$packageName viewId=$viewId class=${event.className}")
+        val text = source?.text
+        val contentDesc = source?.contentDescription
+        logBoth("click pkg=$packageName viewId=$viewId text=$text desc=$contentDesc class=${event.className}")
         val isStartRideClick = viewId == "$packageName:id/$START_RIDE_BTN_ID"
         source?.recycle()
         if (!isStartRideClick) return
