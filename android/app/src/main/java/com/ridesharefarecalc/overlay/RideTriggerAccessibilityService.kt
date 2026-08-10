@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
 import com.ridesharefarecalc.BuildConfig
 
@@ -74,6 +75,16 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         logBoth("click pkg=$packageName viewId=$viewId text=$text desc=$contentDesc class=${event.className}")
         val isStartRideClick = viewId == "$packageName:id/$START_RIDE_BTN_ID"
         source?.recycle()
+
+        // The clicked view itself carries no identifying info (no id, no
+        // text, no description) -- likely a custom touch/gesture wrapper
+        // (e.g. a swipe-to-confirm container). Dump nearby on-screen text
+        // instead, so we can identify which screen/action this was from the
+        // log alone, without needing the clicked view to be self-describing.
+        if (viewId == null && text == null && contentDesc == null) {
+            logBoth("  screen context: ${describeScreen()}")
+        }
+
         if (!isStartRideClick) return
 
         logBoth("Start Ride click matched, package=$packageName")
@@ -99,6 +110,31 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         if (!dropAddress.isNullOrBlank()) {
             geocodeAndAttach(dropAddress)
+        }
+    }
+
+    // Walks the current window's node tree collecting visible text, capped
+    // to keep a single log line readable. Diagnostic-only -- gives screen
+    // context for clicks whose own view has no id/text/description.
+    private fun describeScreen(): String {
+        val root = rootInActiveWindow ?: return "(no root)"
+        val texts = mutableListOf<String>()
+        try {
+            collectText(root, texts)
+        } finally {
+            root.recycle()
+        }
+        return if (texts.isEmpty()) "(no visible text found)" else texts.take(12).joinToString(" | ")
+    }
+
+    private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {
+        if (out.size >= 12) return
+        val text = node.text?.toString()?.trim()
+        if (!text.isNullOrEmpty()) out.add(text)
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectText(child, out)
+            child.recycle()
         }
     }
 
