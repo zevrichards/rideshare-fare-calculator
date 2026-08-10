@@ -47,9 +47,19 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         )
     }
 
+    // Logs to both logcat (for a connected computer) and the on-device ring
+    // buffer (see DiagnosticLog) -- the service typically fires while the
+    // driver is out on the road with no computer around, so the ring buffer,
+    // readable from within the app itself, is the one that actually matters
+    // in practice.
+    private fun logBoth(message: String) {
+        Log.d(TAG, message)
+        DiagnosticLog.log(this, message)
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.d(TAG, "onServiceConnected")
+        logBoth("onServiceConnected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
@@ -59,21 +69,21 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         val source = event.source
         val viewId = source?.viewIdResourceName
-        Log.d(TAG, "click pkg=$packageName viewId=$viewId class=${event.className}")
+        logBoth("click pkg=$packageName viewId=$viewId class=${event.className}")
         val isStartRideClick = viewId == "$packageName:id/$START_RIDE_BTN_ID"
         source?.recycle()
         if (!isStartRideClick) return
 
-        Log.d(TAG, "Start Ride click matched, package=$packageName")
+        logBoth("Start Ride click matched, package=$packageName")
 
         // Guards against double-starting if the event somehow fires twice.
         if (FareTrackingService.activeSnapshot != null) {
-            Log.d(TAG, "Ignoring: a trip is already active")
+            logBoth("Ignoring: a trip is already active")
             return
         }
 
         val dropAddress = findDropAddress(packageName)
-        Log.d(TAG, "dropAddress=$dropAddress")
+        logBoth("dropAddress=$dropAddress")
 
         // Set before starting so the very first tick already uses the right
         // card -- matches which app the click came from, not whatever was
@@ -109,13 +119,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     private fun geocodeAndAttach(address: String) {
         val apiKey = BuildConfig.GOOGLE_ROUTES_API_KEY
         if (apiKey.isEmpty()) {
-            Log.d(TAG, "geocodeAndAttach: no API key configured, skipping")
+            logBoth("geocodeAndAttach: no API key configured, skipping")
             return
         }
 
         Thread {
             val location = PlacesApiClient.searchText(address, apiKey)
-            Log.d(TAG, "geocodeAndAttach: resolved=$location")
+            logBoth("geocodeAndAttach: resolved=$location")
             if (location != null) {
                 val intent = Intent(this, FareTrackingService::class.java).apply {
                     action = FareTrackingService.ACTION_SET_DESTINATION

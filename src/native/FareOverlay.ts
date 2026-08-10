@@ -7,6 +7,9 @@ interface FareOverlayNativeModule {
   hasLocationPermission(): Promise<boolean>;
   hasAccessibilityServiceEnabled(): Promise<boolean>;
   requestAccessibilityServiceEnable(): void;
+  getDiagnosticLog(): Promise<string>;
+  clearDiagnosticLog(): void;
+  copyToClipboard(text: string): void;
   startTrip(destLat: number | null, destLng: number | null): Promise<boolean>;
   stopTrip(): void;
   getActiveTrip(): Promise<TripSnapshot | null>;
@@ -82,6 +85,24 @@ export async function hasAccessibilityServiceEnabled(): Promise<boolean> {
 
 export function requestAccessibilityServiceEnable(): void {
   nativeModule?.requestAccessibilityServiceEnable();
+}
+
+// Reads RideTriggerAccessibilityService's on-device diagnostic log --
+// readable straight from the app UI, since the service normally fires while
+// the driver is out on the road with no computer/adb around to see logcat.
+export async function getDiagnosticLog(): Promise<string> {
+  if (!nativeModule) {
+    return '';
+  }
+  return nativeModule.getDiagnosticLog();
+}
+
+export function clearDiagnosticLog(): void {
+  nativeModule?.clearDiagnosticLog();
+}
+
+export function copyToClipboard(text: string): void {
+  nativeModule?.copyToClipboard(text);
 }
 
 export async function startOverlayTrip(

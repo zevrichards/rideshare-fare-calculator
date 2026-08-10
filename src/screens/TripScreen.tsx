@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useState} from 'react';
-import {AppState, Pressable, StyleSheet, Text, View} from 'react-native';
+import {AppState, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
 import {estimateFareWithRouting} from '../lib/routing';
@@ -16,6 +16,9 @@ import DestinationSearch from './DestinationSearch';
 import MapPickerScreen from './MapPickerScreen';
 import OverlaySizeSection from './OverlaySizeSection';
 import {
+  clearDiagnosticLog,
+  copyToClipboard,
+  getDiagnosticLog,
   getPreferredNavApp,
   hasAccessibilityServiceEnabled,
   hasOverlayPermission,
@@ -74,6 +77,11 @@ function getCurrentPosition(): Promise<GeoPoint> {
 export default function TripScreen() {
   const [destLat, setDestLat] = useState('');
   const [destLng, setDestLng] = useState('');
+  // Display-only label for whatever destLat/destLng currently holds -- a
+  // place name from search, or coordinates from the map picker (which has
+  // no name to offer). Purely cosmetic; destLat/destLng remain the only
+  // values handleStart actually reads.
+  const [destinationLabel, setDestinationLabel] = useState<string | null>(null);
   // The raw estimate inputs, not the computed breakdown -- so switching rate
   // cards mid-trip (see handleSwitchRateCard) can recompute the Estimated
   // Total against the same distance/duration without a fresh API call.
@@ -89,6 +97,9 @@ export default function TripScreen() {
   const [overlayPermitted, setOverlayPermitted] = useState(false);
   const [accessibilityServiceEnabled, setAccessibilityServiceEnabled] =
     useState(false);
+  const [showDiagnosticLog, setShowDiagnosticLog] = useState(false);
+  const [diagnosticLogText, setDiagnosticLogText] = useState('');
+  const [logCopied, setLogCopied] = useState(false);
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
     NAV_APPS.WAZE,
   );
@@ -224,6 +235,28 @@ export default function TripScreen() {
     tracking.stop();
   };
 
+  const handleRefreshDiagnosticLog = () => {
+    getDiagnosticLog().then(setDiagnosticLogText);
+  };
+
+  const handleToggleDiagnosticLog = () => {
+    if (!showDiagnosticLog) {
+      handleRefreshDiagnosticLog();
+    }
+    setShowDiagnosticLog(!showDiagnosticLog);
+  };
+
+  const handleClearDiagnosticLog = () => {
+    clearDiagnosticLog();
+    setDiagnosticLogText('');
+  };
+
+  const handleCopyDiagnosticLog = () => {
+    copyToClipboard(diagnosticLogText);
+    setLogCopied(true);
+    setTimeout(() => setLogCopied(false), 2000);
+  };
+
   // Switching mid-trip (not just before Start Trip) -- write-through to
   // AsyncStorage + the native mirror same as RateCardSection's handleSelect,
   // so a resumed/reopened app and the floating overlay both see the change.
@@ -259,6 +292,9 @@ export default function TripScreen() {
         onConfirm={destination => {
           setDestLat(String(destination.latitude));
           setDestLng(String(destination.longitude));
+          setDestinationLabel(
+            `${destination.latitude.toFixed(5)}, ${destination.longitude.toFixed(5)}`,
+          );
           setShowMapPicker(false);
         }}
       />
@@ -302,6 +338,40 @@ export default function TripScreen() {
             onPress={requestAccessibilityServiceEnable}>
             <Text style={styles.bannerButtonText}>Enable Auto-Start</Text>
           </Pressable>
+        </View>
+      )}
+
+      {isOverlaySupported && accessibilityServiceEnabled && (
+        <View style={styles.diagnosticSection}>
+          <Pressable onPress={handleToggleDiagnosticLog}>
+            <Text style={styles.linkButtonText}>
+              {showDiagnosticLog ? 'Hide' : 'View'} Auto-Start Log
+            </Text>
+          </Pressable>
+          {showDiagnosticLog && (
+            <View style={styles.diagnosticLogBox}>
+              <ScrollView style={styles.diagnosticLogScroll}>
+                <Text style={styles.diagnosticLogText}>
+                  {diagnosticLogText || 'No auto-start activity recorded yet.'}
+                </Text>
+              </ScrollView>
+              <View style={styles.diagnosticLogActions}>
+                <Pressable onPress={handleRefreshDiagnosticLog}>
+                  <Text style={styles.linkButtonText}>Refresh</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleCopyDiagnosticLog}
+                  disabled={!diagnosticLogText}>
+                  <Text style={styles.linkButtonText}>
+                    {logCopied ? 'Copied!' : 'Copy'}
+                  </Text>
+                </Pressable>
+                <Pressable onPress={handleClearDiagnosticLog}>
+                  <Text style={styles.linkButtonText}>Clear</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
         </View>
       )}
 
@@ -349,6 +419,7 @@ export default function TripScreen() {
           onSelect={result => {
             setDestLat(String(result.location.latitude));
             setDestLng(String(result.location.longitude));
+            setDestinationLabel(result.name);
           }}
         />
       )}
@@ -359,6 +430,13 @@ export default function TripScreen() {
           onPress={() => setShowMapPicker(true)}>
           <Text style={styles.mapPickerButtonText}>Pick on Map</Text>
         </Pressable>
+      )}
+
+      {!tracking.isTracking && destinationLabel && (
+        <View style={styles.destinationRow}>
+          <Text style={styles.destinationLabel}>Destination</Text>
+          <Text style={styles.destinationValue}>{destinationLabel}</Text>
+        </View>
       )}
 
       {!tracking.isTracking && (
@@ -510,6 +588,43 @@ const createStyles = (colors: ThemeColors) =>
       color: colors.primary,
       fontSize: 14,
       fontWeight: '600',
+    },
+    diagnosticSection: {
+      marginBottom: 16,
+    },
+    diagnosticLogBox: {
+      marginTop: 8,
+      borderWidth: 1,
+      borderColor: colors.borderSubtle,
+      borderRadius: 8,
+      padding: 8,
+      backgroundColor: colors.surface,
+    },
+    diagnosticLogScroll: {
+      maxHeight: 200,
+    },
+    diagnosticLogText: {
+      fontSize: 12,
+      fontFamily: 'monospace',
+      color: colors.textSecondary,
+    },
+    diagnosticLogActions: {
+      flexDirection: 'row',
+      gap: 16,
+      marginTop: 8,
+    },
+    destinationRow: {
+      marginBottom: 16,
+    },
+    destinationLabel: {
+      fontSize: 13,
+      color: colors.textSecondary,
+      marginBottom: 2,
+    },
+    destinationValue: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.textPrimary,
     },
     button: {
       backgroundColor: colors.primary,

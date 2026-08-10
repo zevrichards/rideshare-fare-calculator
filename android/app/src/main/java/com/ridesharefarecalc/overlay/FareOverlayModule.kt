@@ -1,5 +1,8 @@
 package com.ridesharefarecalc.overlay
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -99,6 +102,30 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         reactApplicationContext.startActivity(intent)
+    }
+
+    // Lets the driver read what RideTriggerAccessibilityService has seen
+    // directly from the app, with no computer/adb involved -- the service
+    // fires while they're out on the road, not sitting connected to a PC.
+    @ReactMethod
+    fun getDiagnosticLog(promise: Promise) {
+        promise.resolve(DiagnosticLog.getAll(reactApplicationContext))
+    }
+
+    @ReactMethod
+    fun clearDiagnosticLog() {
+        DiagnosticLog.clear(reactApplicationContext)
+    }
+
+    // So the diagnostic log can be pasted into a chat/message from the
+    // road -- native ClipboardManager rather than pulling in a JS clipboard
+    // dependency for one string copy. On API 33+ the OS shows its own
+    // "Copied" toast; no extra confirmation needed from us there.
+    @ReactMethod
+    fun copyToClipboard(text: String) {
+        val clipboardManager =
+            reactApplicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("RideshareFareCalc log", text))
     }
 
     // destLat/destLng are nullable -- starting a trip without a destination
