@@ -116,16 +116,16 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     private fun handleWindowStateChanged(event: AccessibilityEvent, packageName: String) {
         val eventText = event.text?.joinToString(" | ")
         logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
-        val screenText = describeScreen()
-        logBoth("  screen context: $screenText")
+        val texts = collectScreenTexts()
+        logBoth("  screen context: ${describeScreen(texts)}")
 
-        if (screenText.contains(RIDE_ACTIVE_MARKER)) {
+        if (texts.any { it.contains(RIDE_ACTIVE_MARKER) }) {
             logBoth("Ride-active screen detected, package=$packageName")
-            startTripIfNeeded(packageName)
+            startTripIfNeeded(packageName, extractDropAddress(texts))
         }
     }
 
-    private fun startTripIfNeeded(packageName: String) {
+    private fun startTripIfNeeded(packageName: String, screenDropAddress: String? = null) {
         // Guards against double-starting -- both handleClick and
         // handleWindowStateChanged can call this, and the ride-active
         // screen re-fires window-changed repeatedly as its timer ticks.
@@ -134,7 +134,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             return
         }
 
-        val dropAddress = findDropAddress(packageName)
+        // textViewCustomerDropAddress (see DROP_ADDRESS_ID) turned out not
+        // to hold the address in the real UI -- confirmed via a real ride's
+        // log, findDropAddress() returned null. The window-state path
+        // extracts the address straight from the ride-active screen's own
+        // visible text instead (see extractDropAddress); the id-based
+        // lookup remains only as a fallback for the legacy click path.
+        val dropAddress = screenDropAddress ?: findDropAddress(packageName)
         logBoth("dropAddress=$dropAddress")
 
         // Set before starting so the very first tick already uses the right
@@ -153,17 +159,35 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     }
 
     // Walks the current window's node tree collecting visible text, capped
-    // to keep a single log line readable. Diagnostic-only -- gives screen
-    // context for clicks whose own view has no id/text/description.
-    private fun describeScreen(): String {
-        val root = rootInActiveWindow ?: return "(no root)"
+    // to keep results readable/bounded. Diagnostic-only in itself, but also
+    // the source for extractDropAddress below.
+    private fun collectScreenTexts(): List<String> {
+        val root = rootInActiveWindow ?: return emptyList()
         val texts = mutableListOf<String>()
         try {
             collectText(root, texts)
         } finally {
             root.recycle()
         }
-        return if (texts.isEmpty()) "(no visible text found)" else texts.take(12).joinToString(" | ")
+        return texts
+    }
+
+    private fun describeScreen(texts: List<String>): String =
+        if (texts.isEmpty()) "(no visible text found)" else texts.take(12).joinToString(" | ")
+
+    // On the ride-active screen, the drop-off address consistently appears
+    // as the item right before a standalone "<number> km" entry (confirmed
+    // from two separate real rides' logs, e.g. "Regular | Park Avenue Park
+    // Avenue San Juan | 0 km | Distance Covered | ..."). Scoped to only run
+    // on that screen (see handleWindowStateChanged), so this shouldn't
+    // false-match "2.14 km away"-style strings elsewhere, which don't match
+    // the pattern anyway since they have trailing words after "km".
+    private val kmEntryPattern = Regex("""^\d+(\.\d+)?\s*km$""")
+
+    private fun extractDropAddress(texts: List<String>): String? {
+        val kmIndex = texts.indexOfFirst { kmEntryPattern.matches(it.trim()) }
+        if (kmIndex <= 0) return null
+        return texts[kmIndex - 1]
     }
 
     private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {

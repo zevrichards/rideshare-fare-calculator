@@ -97,8 +97,8 @@ android {
         applicationId "com.ridesharefarecalc"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 9
-        versionName "0.1.8"
+        versionCode 10
+        versionName "0.1.9"
         buildConfigField "String", "GOOGLE_ROUTES_API_KEY", "\"${googleRoutesApiKey}\""
         // Consumed by react-native-maps' AndroidManifest meta-data entry
         // (com.google.android.geo.API_KEY), not read from BuildConfig --
