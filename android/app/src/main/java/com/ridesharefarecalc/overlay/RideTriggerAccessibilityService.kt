@@ -11,18 +11,29 @@ import com.ridesharefarecalc.BuildConfig
 /**
  * Opt-in (user must enable via Settings > Accessibility -- see
  * FareOverlayModule.hasAccessibilityServiceEnabled/requestAccessibilityServiceEnable)
- * detector for TTRS/Allridi's "Start Ride" button: the moment a driver
- * confirms pickup and the paid portion of a trip begins. Scoped via
- * res/xml/accessibility_service_config.xml to just these two packages;
- * observe-only, no gesture/action-injection capability requested.
+ * detector for the moment a driver confirms pickup and the paid portion of a
+ * TTRS/Allridi trip begins. Scoped via res/xml/accessibility_service_config.xml
+ * to just these two packages; observe-only, no gesture/action-injection
+ * capability requested.
  *
- * Both apps are built from the same white-label codebase (confirmed by
- * decompiling both real driver APKs) and share identical view IDs:
- *   - driverStartRideBtn: the trigger, a real View with a standard
- *     setOnClickListener/performClick() despite its swipe-to-confirm visual,
- *     so a plain TYPE_VIEW_CLICKED event is expected here.
- *   - textViewCustomerDropAddress: a sibling on the same screen, holding the
- *     drop-off address as plain text.
+ * Detection is screen-content-based, not button-based. Static APK
+ * decompilation suggested a specific "Start Ride" button
+ * (driverStartRideBtn/textViewCustomerDropAddress), but real-device testing
+ * (v0.1.1 through v0.1.6-beta) showed that theory was wrong on two fronts:
+ * the actual flow doesn't go through that button at all (it's tucked behind
+ * an "arrived?" confirmation + a separate start tap), and even that real tap
+ * can't be inspected reliably -- it triggers its own screen transition,
+ * which invalidates the clicked AccessibilityNodeInfo before onClickEvent's
+ * handler runs (confirmed: both a fresh rootInActiveWindow query and
+ * climbing the node's own parent chain came back empty on a real device).
+ *
+ * The fix (v0.1.7-beta on): watch TYPE_WINDOW_STATE_CHANGED instead, which
+ * fires once a new screen has already settled -- it doesn't race the
+ * transition it's reporting on. A real TTRS ride, logged in full, showed the
+ * screen right after the trip actually starts is uniquely identifiable by
+ * its own visible text ("Distance Covered" / "Ride Time" only ever appear
+ * once a trip is in progress). Matching on that instead of any specific
+ * button sidesteps the whole staleness problem.
  *
  * Existing manual/intercept/destination-optional flows are untouched by any
  * of this -- this service only ever calls the same public entry points
@@ -31,16 +42,24 @@ import com.ridesharefarecalc.BuildConfig
 class RideTriggerAccessibilityService : AccessibilityService() {
 
     companion object {
-        // Temporary diagnostic logging (v0.1.1) -- the service reportedly
-        // didn't fire on either app on a real ride. This TAG lets us confirm,
-        // via `adb logcat -s RideTrigger`, whether the service is even
-        // receiving click events at all inside these apps (any button, not
-        // just Start Ride, since packageNames scopes the whole app) before
-        // chasing narrower theories.
+        // Diagnostic logging, kept even after the fix -- the service fires
+        // in the field, not somewhere adb can reach, so the on-device log
+        // (see DiagnosticLog) remains the only practical way to confirm it's
+        // still working as TTRS/Allridi's own UI changes over time.
         private const val TAG = "RideTrigger"
 
+        // Legacy id-based match, kept as a harmless fallback in case some
+        // app variant does route through a real, id-bearing button -- but
+        // the primary trigger below no longer depends on this.
         private const val START_RIDE_BTN_ID = "driverStartRideBtn"
         private const val DROP_ADDRESS_ID = "textViewCustomerDropAddress"
+
+        // Confirmed present, from a real TTRS ride's screen text, only once
+        // the paid trip has actually started (never during accept/navigate/
+        // arrived). Both apps share the same white-label codebase, so this
+        // is expected (not yet independently confirmed) to hold for Allridi
+        // too.
+        private const val RIDE_ACTIVE_MARKER = "Distance Covered"
 
         private val RATE_CARD_ID_BY_PACKAGE = mapOf(
             "production.ttrides.driver" to "ttrs",
@@ -73,16 +92,8 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Click-node attributes proved unreliable for identifying the actual
-    // start-of-ride tap: both a fresh rootInActiveWindow query and climbing
-    // the clicked node's own parent chain came back empty on a real device,
-    // because the tap itself triggers a screen transition that invalidates
-    // the node before we get to inspect it. TYPE_WINDOW_STATE_CHANGED (see
-    // handleWindowStateChanged) fires once the new screen has already
-    // settled, so it doesn't race the same way -- that's now the primary
-    // tool for mapping out the real screen flow. This still logs whatever
-    // the click itself can tell us, which is free and occasionally useful
-    // (e.g. TTRS's menuBtn, Allridi's reviewFinishBtn were both caught fine).
+    // Legacy id-based match -- see START_RIDE_BTN_ID's comment. Kept as a
+    // harmless fallback; the primary trigger is handleWindowStateChanged.
     private fun handleClick(event: AccessibilityEvent, packageName: String) {
         val source = event.source
         val viewId = source?.viewIdResourceName
@@ -94,9 +105,30 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         if (!isStartRideClick) return
 
-        logBoth("Start Ride click matched, package=$packageName")
+        logBoth("Start Ride click matched (legacy id path), package=$packageName")
+        startTripIfNeeded(packageName)
+    }
 
-        // Guards against double-starting if the event somehow fires twice.
+    // Fires once the new screen/window has already settled -- unlike a
+    // click, this doesn't race a transition the event itself is causing, so
+    // rootInActiveWindow is reliable here. Primary trigger: if the settled
+    // screen's own text shows the trip is now in progress, start tracking.
+    private fun handleWindowStateChanged(event: AccessibilityEvent, packageName: String) {
+        val eventText = event.text?.joinToString(" | ")
+        logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
+        val screenText = describeScreen()
+        logBoth("  screen context: $screenText")
+
+        if (screenText.contains(RIDE_ACTIVE_MARKER)) {
+            logBoth("Ride-active screen detected, package=$packageName")
+            startTripIfNeeded(packageName)
+        }
+    }
+
+    private fun startTripIfNeeded(packageName: String) {
+        // Guards against double-starting -- both handleClick and
+        // handleWindowStateChanged can call this, and the ride-active
+        // screen re-fires window-changed repeatedly as its timer ticks.
         if (FareTrackingService.activeSnapshot != null) {
             logBoth("Ignoring: a trip is already active")
             return
@@ -106,9 +138,8 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         logBoth("dropAddress=$dropAddress")
 
         // Set before starting so the very first tick already uses the right
-        // card -- matches which app the click came from, not whatever was
-        // last selected in-app. Safe to assume present: onAccessibilityEvent
-        // already checked this package is a key of RATE_CARD_ID_BY_PACKAGE.
+        // card -- matches which app the trigger came from, not whatever was
+        // last selected in-app.
         RateCardPreference.setSelectedRateCardId(this, RATE_CARD_ID_BY_PACKAGE.getValue(packageName))
 
         // Starts the fare clock immediately, with no destination -- the
@@ -119,17 +150,6 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         if (!dropAddress.isNullOrBlank()) {
             geocodeAndAttach(dropAddress)
         }
-    }
-
-    // Fires once the new screen/window has already settled -- unlike a
-    // click, this doesn't race a transition the event itself is causing, so
-    // rootInActiveWindow should be reliable here. This is now the primary
-    // tool for mapping out the real screen flow (accept -> navigate ->
-    // start ride -> ...), by logging what each screen actually shows.
-    private fun handleWindowStateChanged(event: AccessibilityEvent, packageName: String) {
-        val eventText = event.text?.joinToString(" | ")
-        logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
-        logBoth("  screen context: ${describeScreen()}")
     }
 
     // Walks the current window's node tree collecting visible text, capped
