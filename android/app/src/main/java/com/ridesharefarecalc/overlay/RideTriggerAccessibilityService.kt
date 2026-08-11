@@ -64,30 +64,32 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) return
         val packageName = event.packageName?.toString() ?: return
-        val rateCardId = RATE_CARD_ID_BY_PACKAGE[packageName] ?: return
+        if (RATE_CARD_ID_BY_PACKAGE[packageName] == null) return
 
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowStateChanged(event, packageName)
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClick(event, packageName)
+        }
+    }
+
+    // Click-node attributes proved unreliable for identifying the actual
+    // start-of-ride tap: both a fresh rootInActiveWindow query and climbing
+    // the clicked node's own parent chain came back empty on a real device,
+    // because the tap itself triggers a screen transition that invalidates
+    // the node before we get to inspect it. TYPE_WINDOW_STATE_CHANGED (see
+    // handleWindowStateChanged) fires once the new screen has already
+    // settled, so it doesn't race the same way -- that's now the primary
+    // tool for mapping out the real screen flow. This still logs whatever
+    // the click itself can tell us, which is free and occasionally useful
+    // (e.g. TTRS's menuBtn, Allridi's reviewFinishBtn were both caught fine).
+    private fun handleClick(event: AccessibilityEvent, packageName: String) {
         val source = event.source
         val viewId = source?.viewIdResourceName
         val text = source?.text
         val contentDesc = source?.contentDescription
         logBoth("click pkg=$packageName viewId=$viewId text=$text desc=$contentDesc class=${event.className}")
         val isStartRideClick = viewId == "$packageName:id/$START_RIDE_BTN_ID"
-
-        // The clicked view itself carries no identifying info (no id, no
-        // text, no description) -- likely a custom touch/gesture wrapper
-        // (e.g. a swipe-to-confirm container). Climb the node's own parent
-        // chain instead of re-querying rootInActiveWindow -- a fresh window
-        // query can race with a screen transition the click itself triggers
-        // and come back null (confirmed: "(no root)" seen on a real device
-        // right as this exact kind of click fired), whereas walking up from
-        // the node reference we already have doesn't depend on that query.
-        if (viewId == null && text == null && contentDesc == null) {
-            logBoth("  ancestors: ${describeAncestors(source)}")
-            logBoth("  screen context: ${describeScreen()}")
-        }
-
         source?.recycle()
 
         if (!isStartRideClick) return
@@ -105,8 +107,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         // Set before starting so the very first tick already uses the right
         // card -- matches which app the click came from, not whatever was
-        // last selected in-app.
-        RateCardPreference.setSelectedRateCardId(this, rateCardId)
+        // last selected in-app. Safe to assume present: onAccessibilityEvent
+        // already checked this package is a key of RATE_CARD_ID_BY_PACKAGE.
+        RateCardPreference.setSelectedRateCardId(this, RATE_CARD_ID_BY_PACKAGE.getValue(packageName))
 
         // Starts the fare clock immediately, with no destination -- the
         // same destination-optional path TripScreen's own Start Trip uses.
@@ -118,25 +121,15 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Climbs from the clicked node's own parent reference (not a fresh
-    // window query) collecting each ancestor's id/text/desc/class. More
-    // reliable than describeScreen() right at the moment of a click that
-    // triggers its own screen transition.
-    private fun describeAncestors(start: AccessibilityNodeInfo?): String {
-        val parts = mutableListOf<String>()
-        var current = start?.parent
-        var depth = 0
-        while (current != null && depth < 8) {
-            parts.add(
-                "[${current.className} id=${current.viewIdResourceName} " +
-                    "text=${current.text} desc=${current.contentDescription}]",
-            )
-            val next = current.parent
-            current.recycle()
-            current = next
-            depth++
-        }
-        return if (parts.isEmpty()) "(no parent)" else parts.joinToString(" < ")
+    // Fires once the new screen/window has already settled -- unlike a
+    // click, this doesn't race a transition the event itself is causing, so
+    // rootInActiveWindow should be reliable here. This is now the primary
+    // tool for mapping out the real screen flow (accept -> navigate ->
+    // start ride -> ...), by logging what each screen actually shows.
+    private fun handleWindowStateChanged(event: AccessibilityEvent, packageName: String) {
+        val eventText = event.text?.joinToString(" | ")
+        logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
+        logBoth("  screen context: ${describeScreen()}")
     }
 
     // Walks the current window's node tree collecting visible text, capped
