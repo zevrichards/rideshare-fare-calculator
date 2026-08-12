@@ -54,12 +54,12 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         private const val START_RIDE_BTN_ID = "driverStartRideBtn"
         private const val DROP_ADDRESS_ID = "textViewCustomerDropAddress"
 
-        // Confirmed present, from a real TTRS ride's screen text, only once
-        // the paid trip has actually started (never during accept/navigate/
-        // arrived). Both apps share the same white-label codebase, so this
-        // is expected (not yet independently confirmed) to hold for Allridi
-        // too.
-        private const val RIDE_ACTIVE_MARKER = "Distance Covered"
+        // Confirmed present, from real rides' screen text, only once the
+        // paid trip has actually started (never during accept/navigate/
+        // arrived). Despite sharing a codebase, TTRS and Allridi use
+        // different wording here ("Distance Covered" vs "Distance
+        // Driven") -- confirmed independently from two separate real rides.
+        private val RIDE_ACTIVE_MARKERS = listOf("Distance Covered", "Distance Driven")
 
         private val RATE_CARD_ID_BY_PACKAGE = mapOf(
             "production.ttrides.driver" to "ttrs",
@@ -119,7 +119,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         val texts = collectScreenTexts()
         logBoth("  screen context: ${describeScreen(texts)}")
 
-        if (texts.any { it.contains(RIDE_ACTIVE_MARKER) }) {
+        if (texts.any { text -> RIDE_ACTIVE_MARKERS.any { marker -> text.contains(marker) } }) {
             logBoth("Ride-active screen detected, package=$packageName")
             startTripIfNeeded(packageName, extractDropAddress(texts))
         }
@@ -175,16 +175,27 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     private fun describeScreen(texts: List<String>): String =
         if (texts.isEmpty()) "(no visible text found)" else texts.take(12).joinToString(" | ")
 
-    // On the ride-active screen, the drop-off address consistently appears
-    // as the item right before a standalone "<number> km" entry (confirmed
-    // from two separate real rides' logs, e.g. "Regular | Park Avenue Park
-    // Avenue San Juan | 0 km | Distance Covered | ..."). Scoped to only run
-    // on that screen (see handleWindowStateChanged), so this shouldn't
-    // false-match "2.14 km away"-style strings elsewhere, which don't match
-    // the pattern anyway since they have trailing words after "km".
+    // Both apps put the drop-off address on the ride-active screen, but
+    // structured differently (confirmed from separate real rides' logs):
+    //   - Allridi has an explicit "Drop off at" label immediately followed
+    //     by the address itself -- use that when present, it's unambiguous.
+    //   - TTRS has no such label; there, the address consistently appears
+    //     as the item right before a standalone "<number> km" entry (e.g.
+    //     "Regular | Park Avenue Park Avenue San Juan | 0 km | Distance
+    //     Covered | ..."). Only tried as a fallback, since on Allridi's
+    //     screen the item before "0 km" is "Distance Driven", not the
+    //     address -- this pattern alone would be wrong there.
+    // Both extraction attempts are scoped to only run on the already-
+    // confirmed ride-active screen (see handleWindowStateChanged), so
+    // neither should false-match similar-looking text elsewhere.
     private val kmEntryPattern = Regex("""^\d+(\.\d+)?\s*km$""")
 
     private fun extractDropAddress(texts: List<String>): String? {
+        val dropOffLabelIndex = texts.indexOfFirst { it.equals("Drop off at", ignoreCase = true) }
+        if (dropOffLabelIndex >= 0 && dropOffLabelIndex + 1 < texts.size) {
+            return texts[dropOffLabelIndex + 1]
+        }
+
         val kmIndex = texts.indexOfFirst { kmEntryPattern.matches(it.trim()) }
         if (kmIndex <= 0) return null
         return texts[kmIndex - 1]
