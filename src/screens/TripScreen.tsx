@@ -38,6 +38,12 @@ import {ThemeColors, useThemeColors} from '../theme/colors';
 const FARE_DISCLAIMER =
   'Final cost may vary. Do not use this figure to charge passengers. Only rely on your rideshare app final figure.';
 
+// Each app's own Earnings screen shows the gross trip total, not what the
+// driver actually gets paid -- these are the platform commission cuts, used
+// to convert the captured gross figure into an estimated take-home amount.
+const TTRS_COMMISSION_RATE = 0.2;
+const ALLRIDI_COMMISSION_RATE = 0.15;
+
 function BreakdownLines({breakdown}: {breakdown: FareBreakdown}) {
   // Separate component, so it can't reach TripScreen's local `styles` --
   // recomputing it here is cheap and keeps this component self-contained.
@@ -289,8 +295,12 @@ export default function TripScreen() {
     : null;
   const estimatedTotal = estimatedBreakdown?.total ?? null;
 
-  const ttrsEarnings = dailyEarnings?.ttrs ?? null;
-  const allridiEarnings = dailyEarnings?.allridi ?? null;
+  const ttrsEarnings =
+    dailyEarnings?.ttrs != null ? dailyEarnings.ttrs * (1 - TTRS_COMMISSION_RATE) : null;
+  const allridiEarnings =
+    dailyEarnings?.allridi != null
+      ? dailyEarnings.allridi * (1 - ALLRIDI_COMMISSION_RATE)
+      : null;
   const hasDailyEarnings = ttrsEarnings !== null || allridiEarnings !== null;
   const dailyEarningsTotal = (ttrsEarnings ?? 0) + (allridiEarnings ?? 0);
 
