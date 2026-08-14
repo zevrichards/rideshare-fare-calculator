@@ -7,6 +7,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
 import com.ridesharefarecalc.BuildConfig
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Opt-in (user must enable via Settings > Accessibility -- see
@@ -123,6 +126,11 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             logBoth("Ride-active screen detected, package=$packageName")
             startTripIfNeeded(packageName, extractDropAddress(texts))
         }
+
+        extractDailyEarnings(packageName, texts)?.let { amount ->
+            logBoth("Daily earnings detected pkg=$packageName amount=$amount")
+            DailyEarnings.record(this, packageName, amount)
+        }
     }
 
     private fun startTripIfNeeded(packageName: String, screenDropAddress: String? = null) {
@@ -200,6 +208,44 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         if (kmIndex <= 0) return null
         return texts[kmIndex - 1]
     }
+
+    // Passively captured whenever the driver happens to open their own
+    // app's Earnings screen -- there's no way to navigate there ourselves,
+    // only to notice the figure when it's already on screen. Each app
+    // structures this screen differently, so parsing is per-package.
+    private fun extractDailyEarnings(packageName: String, texts: List<String>): Double? =
+        when (packageName) {
+            "product.allridi.driver" -> extractAllridiDailyEarnings(texts)
+            "production.ttrides.driver" -> extractTtrsDailyEarnings(texts)
+            else -> null
+        }
+
+    // Confirmed from a real Allridi Earnings screen: a "Daily Earnings"
+    // section lists "<Day>, <DD/MM>" entries each immediately followed by
+    // that day's amount (e.g. "TUE, 11/08 | TT$22 | MON, 10/08 | TT$93 |
+    // ..."). Matching today's actual date string, rather than assuming the
+    // list's first entry is always today, avoids depending on sort order.
+    private fun extractAllridiDailyEarnings(texts: List<String>): Double? {
+        val todayLabel = SimpleDateFormat("EEE, dd/MM", Locale.US).format(Date())
+        val labelIndex = texts.indexOfFirst { it.equals(todayLabel, ignoreCase = true) }
+        if (labelIndex < 0 || labelIndex + 1 >= texts.size) return null
+        return parseCurrency(texts[labelIndex + 1])
+    }
+
+    // Best-effort, not yet confirmed against a real TTRS Earnings screen --
+    // based on the driver's description of a value sitting directly above a
+    // "today's earning(s)" heading. Diagnostic logging (see logBoth above)
+    // will show whether this actually matches once tested on a real screen.
+    private fun extractTtrsDailyEarnings(texts: List<String>): Double? {
+        val headingIndex = texts.indexOfFirst {
+            it.contains("today", ignoreCase = true) && it.contains("earning", ignoreCase = true)
+        }
+        if (headingIndex <= 0) return null
+        return parseCurrency(texts[headingIndex - 1])
+    }
+
+    private fun parseCurrency(text: String): Double? =
+        Regex("""[\d,]+(\.\d+)?""").find(text)?.value?.replace(",", "")?.toDoubleOrNull()
 
     private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {
         if (out.size >= 12) return

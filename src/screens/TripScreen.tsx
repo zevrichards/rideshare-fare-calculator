@@ -18,6 +18,8 @@ import OverlaySizeSection from './OverlaySizeSection';
 import {
   clearDiagnosticLog,
   copyToClipboard,
+  DailyEarnings,
+  getDailyEarnings,
   getDiagnosticLog,
   getPreferredNavApp,
   hasAccessibilityServiceEnabled,
@@ -100,6 +102,7 @@ export default function TripScreen() {
   const [showDiagnosticLog, setShowDiagnosticLog] = useState(false);
   const [diagnosticLogText, setDiagnosticLogText] = useState('');
   const [logCopied, setLogCopied] = useState(false);
+  const [dailyEarnings, setDailyEarnings] = useState<DailyEarnings | null>(null);
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
     NAV_APPS.WAZE,
   );
@@ -122,6 +125,7 @@ export default function TripScreen() {
     const checkPermission = () => {
       hasOverlayPermission().then(setOverlayPermitted);
       hasAccessibilityServiceEnabled().then(setAccessibilityServiceEnabled);
+      getDailyEarnings().then(setDailyEarnings);
     };
     checkPermission();
     getPreferredNavApp().then(setPreferredNavAppState);
@@ -285,6 +289,11 @@ export default function TripScreen() {
     : null;
   const estimatedTotal = estimatedBreakdown?.total ?? null;
 
+  const ttrsEarnings = dailyEarnings?.ttrs ?? null;
+  const allridiEarnings = dailyEarnings?.allridi ?? null;
+  const hasDailyEarnings = ttrsEarnings !== null || allridiEarnings !== null;
+  const dailyEarningsTotal = (ttrsEarnings ?? 0) + (allridiEarnings ?? 0);
+
   if (showMapPicker) {
     return (
       <MapPickerScreen
@@ -304,6 +313,18 @@ export default function TripScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Fare Calculator</Text>
+
+      {hasDailyEarnings && (
+        <View style={styles.earningsRow}>
+          <Text style={styles.earningsLabel}>Today's Earnings</Text>
+          <Text style={styles.earningsValue}>${dailyEarningsTotal.toFixed(2)}</Text>
+          {ttrsEarnings !== null && allridiEarnings !== null && (
+            <Text style={styles.earningsBreakdown}>
+              TTRS ${ttrsEarnings.toFixed(2)} · Allridi ${allridiEarnings.toFixed(2)}
+            </Text>
+          )}
+        </View>
+      )}
 
       {!tracking.isTracking && !isOverlaySupported && (
         <View style={styles.banner}>
@@ -511,6 +532,24 @@ const createStyles = (colors: ThemeColors) =>
       marginBottom: 24,
       textAlign: 'center',
       color: colors.textPrimary,
+    },
+    earningsRow: {
+      alignItems: 'center',
+      marginBottom: 16,
+    },
+    earningsLabel: {
+      fontSize: 13,
+      color: colors.textSecondary,
+    },
+    earningsValue: {
+      fontSize: 22,
+      fontWeight: '700',
+      color: colors.textPrimary,
+    },
+    earningsBreakdown: {
+      fontSize: 12,
+      color: colors.textMuted,
+      marginTop: 2,
     },
     form: {
       gap: 8,

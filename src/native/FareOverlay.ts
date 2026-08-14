@@ -10,6 +10,7 @@ interface FareOverlayNativeModule {
   getDiagnosticLog(): Promise<string>;
   clearDiagnosticLog(): void;
   copyToClipboard(text: string): void;
+  getDailyEarnings(): Promise<DailyEarnings>;
   startTrip(destLat: number | null, destLng: number | null): Promise<boolean>;
   stopTrip(): void;
   getActiveTrip(): Promise<TripSnapshot | null>;
@@ -43,6 +44,13 @@ export interface TripSnapshot {
   surgeMultiplier: number;
   estimatedDistanceKm: number | null;
   estimatedMinutes: number | null;
+}
+
+// Passively captured whenever the driver happens to open each app's own
+// Earnings screen -- null means no figure has been seen for today yet.
+export interface DailyEarnings {
+  ttrs: number | null;
+  allridi: number | null;
 }
 
 export const NAV_APPS = {
@@ -103,6 +111,13 @@ export function clearDiagnosticLog(): void {
 
 export function copyToClipboard(text: string): void {
   nativeModule?.copyToClipboard(text);
+}
+
+export async function getDailyEarnings(): Promise<DailyEarnings> {
+  if (!nativeModule) {
+    return {ttrs: null, allridi: null};
+  }
+  return nativeModule.getDailyEarnings();
 }
 
 export async function startOverlayTrip(

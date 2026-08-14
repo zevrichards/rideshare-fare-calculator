@@ -117,6 +117,20 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
         DiagnosticLog.clear(reactApplicationContext)
     }
 
+    // Passively captured by RideTriggerAccessibilityService whenever the
+    // driver happens to open each app's own Earnings screen -- null for a
+    // package means no figure has been seen for today yet.
+    @ReactMethod
+    fun getDailyEarnings(promise: Promise) {
+        val result = Arguments.createMap().apply {
+            val ttrs = DailyEarnings.getToday(reactApplicationContext, "production.ttrides.driver")
+            val allridi = DailyEarnings.getToday(reactApplicationContext, "product.allridi.driver")
+            if (ttrs != null) putDouble("ttrs", ttrs) else putNull("ttrs")
+            if (allridi != null) putDouble("allridi", allridi) else putNull("allridi")
+        }
+        promise.resolve(result)
+    }
+
     // So the diagnostic log can be pasted into a chat/message from the
     // road -- native ClipboardManager rather than pulling in a JS clipboard
     // dependency for one string copy. On API 33+ the OS shows its own
