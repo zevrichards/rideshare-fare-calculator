@@ -2,6 +2,8 @@ package com.ridesharefarecalc.overlay
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -15,9 +17,10 @@ import java.util.Locale
  * Opt-in (user must enable via Settings > Accessibility -- see
  * FareOverlayModule.hasAccessibilityServiceEnabled/requestAccessibilityServiceEnable)
  * detector for the moment a driver confirms pickup and the paid portion of a
- * TTRS/Allridi trip begins. Scoped via res/xml/accessibility_service_config.xml
- * to just these two packages; observe-only, no gesture/action-injection
- * capability requested.
+ * TTRS/Allridi trip begins, and for when that trip ends. Scoped via
+ * res/xml/accessibility_service_config.xml to just these two packages;
+ * observe-only for its core purpose -- no gesture/action-injection
+ * capability requested beyond the online/offline toggle described below.
  *
  * Detection is screen-content-based, not button-based. Static APK
  * decompilation suggested a specific "Start Ride" button
@@ -36,11 +39,20 @@ import java.util.Locale
  * screen right after the trip actually starts is uniquely identifiable by
  * its own visible text ("Distance Covered" / "Ride Time" only ever appear
  * once a trip is in progress). Matching on that instead of any specific
- * button sidesteps the whole staleness problem.
+ * button sidesteps the whole staleness problem. Trip-end detection (see
+ * RIDE_ENDED_MARKERS_BY_PACKAGE) uses the same approach.
  *
  * Existing manual/intercept/destination-optional flows are untouched by any
  * of this -- this service only ever calls the same public entry points
  * (FareTrackingService's own Intent actions) those flows already use.
+ *
+ * Also taps the other app's online/offline toggle once a trip genuinely
+ * starts on one (to avoid a double-booking), and taps it back online once
+ * that trip ends -- see triggerToggle/performPendingToggle. Unlike the
+ * ride-start/end detection itself, this does briefly foreground the other
+ * app and perform an action on it -- deliberately scoped to a status toggle
+ * only, never to responding to a Request, which is a materially different
+ * category of automation from an auto-accept ("sniping") tool.
  */
 class RideTriggerAccessibilityService : AccessibilityService() {
 
@@ -64,11 +76,51 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         // Driven") -- confirmed independently from two separate real rides.
         private val RIDE_ACTIVE_MARKERS = listOf("Distance Covered", "Distance Driven")
 
+        // Confirmed from real rides' screen text, only once the trip has
+        // actually ended: TTRS shows a "Ride Complete" summary/rating
+        // screen; Allridi shows a payment/receipt screen. Allridi's two
+        // markers must both be present (a lone "Trip fare" is a bit generic
+        // to trust alone); TTRS's single marker is distinctive enough on
+        // its own. Not yet confirmed live -- diagnostic logging will show
+        // what's actually there if this needs adjusting.
+        private val RIDE_ENDED_MARKERS_BY_PACKAGE = mapOf(
+            "production.ttrides.driver" to listOf("Ride Complete"),
+            "product.allridi.driver" to listOf("Form of payment", "Trip fare"),
+        )
+
         private val RATE_CARD_ID_BY_PACKAGE = mapOf(
             "production.ttrides.driver" to "ttrs",
             "product.allridi.driver" to "allridi",
         )
+
+        // Cap on how many settled screens of the target app we'll inspect
+        // looking for its online/offline toggle before giving up -- without
+        // this, a toggle that's never found would leave every future visit
+        // to that app (for unrelated reasons) mistakenly treated as still
+        // pending a toggle.
+        private const val MAX_TOGGLE_ATTEMPTS = 4
     }
+
+    // Describes an in-progress attempt to tap the other app's online/offline
+    // toggle -- set by triggerToggle, consumed by performPendingToggle once
+    // targetPackage's window settles, cleared on success or after
+    // MAX_TOGGLE_ATTEMPTS.
+    private data class PendingToggle(
+        val targetPackage: String,
+        // The exact text currently shown on the toggle we're about to tap
+        // ("ON" to switch it off, "OFF" to switch it back on).
+        val searchText: String,
+        val returnToPackage: String?,
+        var attempts: Int = 0,
+    )
+
+    private var pendingToggle: PendingToggle? = null
+
+    // Which app (if any) this service itself put offline, so a trip ending
+    // on the other one knows which app to bring back online. Cleared once
+    // that toggle-back-on actually succeeds, not just attempted -- so a
+    // failed/retrying attempt doesn't lose track of which app is owed one.
+    private var offlinedPackage: String? = null
 
     // Logs to both logcat (for a connected computer) and the on-device ring
     // buffer (see DiagnosticLog) -- the service typically fires while the
@@ -114,23 +166,38 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
     // Fires once the new screen/window has already settled -- unlike a
     // click, this doesn't race a transition the event itself is causing, so
-    // rootInActiveWindow is reliable here. Primary trigger: if the settled
-    // screen's own text shows the trip is now in progress, start tracking.
+    // rootInActiveWindow is reliable here. Primary trigger for both starting
+    // and stopping the fare clock: if the settled screen's own text shows
+    // the trip is now in progress (or has ended), act accordingly.
     private fun handleWindowStateChanged(event: AccessibilityEvent, packageName: String) {
         val eventText = event.text?.joinToString(" | ")
         logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
         val texts = collectScreenTexts()
         logBoth("  screen context: ${describeScreen(texts)}")
 
+        if (packageName == pendingToggle?.targetPackage) {
+            performPendingToggle(packageName)
+        }
+
         if (texts.any { text -> RIDE_ACTIVE_MARKERS.any { marker -> text.contains(marker) } }) {
             logBoth("Ride-active screen detected, package=$packageName")
             startTripIfNeeded(packageName, extractDropAddress(texts))
+        }
+
+        if (isRideEndedScreen(packageName, texts)) {
+            logBoth("Ride-ended screen detected, package=$packageName")
+            stopTripIfNeeded(packageName)
         }
 
         extractDailyEarnings(packageName, texts)?.let { amount ->
             logBoth("Daily earnings detected pkg=$packageName amount=$amount")
             DailyEarnings.record(this, packageName, amount)
         }
+    }
+
+    private fun isRideEndedScreen(packageName: String, texts: List<String>): Boolean {
+        val required = RIDE_ENDED_MARKERS_BY_PACKAGE[packageName] ?: return false
+        return required.all { marker -> texts.any { it.contains(marker) } }
     }
 
     private fun startTripIfNeeded(packageName: String, screenDropAddress: String? = null) {
@@ -164,6 +231,132 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         if (!dropAddress.isNullOrBlank()) {
             geocodeAndAttach(dropAddress)
         }
+
+        val otherPkg = otherPackage(packageName)
+        if (otherPkg != null) {
+            triggerToggle(target = otherPkg, searchText = "ON", returnTo = packageName)
+        }
+    }
+
+    // Closes the overlay (via FareTrackingService's own stop path -- same
+    // one TripScreen's Stop Trip button and the intercept flow already use)
+    // and, if this service put the other app offline for this trip, brings
+    // it back online.
+    private fun stopTripIfNeeded(justEndedPackage: String) {
+        if (FareTrackingService.activeSnapshot == null) {
+            // Nothing to stop -- avoids re-triggering the online toggle on
+            // every subsequent window event this same ended screen fires.
+            return
+        }
+
+        logBoth("Stopping trip (ride-ended screen detected on $justEndedPackage)")
+        val stopIntent = Intent(this, FareTrackingService::class.java).apply {
+            action = FareTrackingService.ACTION_STOP
+        }
+        startService(stopIntent)
+
+        val toBringOnline = offlinedPackage
+        if (toBringOnline != null) {
+            triggerToggle(target = toBringOnline, searchText = "OFF", returnTo = justEndedPackage)
+        }
+    }
+
+    // Foregrounds `target` and, once its window settles, taps whatever node
+    // shows exactly `searchText` ("ON" or "OFF") to flip its status.
+    private fun triggerToggle(target: String, searchText: String, returnTo: String?) {
+        logBoth("Foregrounding $target to tap its '$searchText' toggle")
+        pendingToggle = PendingToggle(targetPackage = target, searchText = searchText, returnToPackage = returnTo)
+        launchApp(target)
+    }
+
+    private fun otherPackage(packageName: String): String? = when (packageName) {
+        "production.ttrides.driver" -> "product.allridi.driver"
+        "product.allridi.driver" -> "production.ttrides.driver"
+        else -> null
+    }
+
+    private fun launchApp(packageName: String) {
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        if (intent == null) {
+            logBoth("launchApp: no launch intent for $packageName")
+            return
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+        logBoth("launchApp: launched $packageName")
+    }
+
+    // Best-effort, not yet confirmed against a real toggle in either app --
+    // the toggle has no stable id (same story as driverStartRideBtn
+    // earlier), so this searches for a node whose own text is exactly
+    // pending.searchText and climbs to its nearest clickable ancestor
+    // (matching the pattern of custom touch wrappers seen elsewhere in
+    // these apps). Retries across up to MAX_TOGGLE_ATTEMPTS settled
+    // screens, since the target app may still be mid-launch (splash/
+    // loading) the first time this fires. Diagnostic logging will show
+    // what's actually there if this doesn't match on a real ride.
+    private fun performPendingToggle(packageName: String) {
+        val pending = pendingToggle ?: return
+        pending.attempts++
+
+        val root = rootInActiveWindow
+        val toggleNode = root?.let { findToggleNode(it, pending.searchText) }
+        root?.recycle()
+
+        if (toggleNode != null) {
+            val result = toggleNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            toggleNode.recycle()
+            logBoth(
+                "toggle: tapped '${pending.searchText}' for $packageName (attempt ${pending.attempts}), result=$result",
+            )
+            pendingToggle = null
+            offlinedPackage = if (pending.searchText == "ON") packageName else null
+
+            // Give the tap a moment to register before switching away, so we
+            // don't interrupt the app's own transition out of its old state.
+            val returnTo = pending.returnToPackage
+            if (returnTo != null) {
+                Handler(Looper.getMainLooper()).postDelayed({ launchApp(returnTo) }, 1500)
+            }
+            return
+        }
+
+        logBoth("toggle: '${pending.searchText}' not found for $packageName (attempt ${pending.attempts})")
+        if (pending.attempts >= MAX_TOGGLE_ATTEMPTS) {
+            logBoth("toggle: giving up for $packageName after ${pending.attempts} attempts")
+            pendingToggle = null
+        }
+    }
+
+    // Searches for a node whose own text is exactly `text` (not a substring
+    // match, e.g. "ON" won't match "ONLINE"), then climbs its parent chain
+    // looking for the nearest clickable ancestor -- the actual toggle is
+    // very likely a custom touch container wrapping a plain label, the same
+    // pattern seen with driverStartRideBtn. Returns an un-recycled node the
+    // caller owns; all other nodes visited are recycled internally.
+    private fun findToggleNode(root: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
+        val matches = root.findAccessibilityNodeInfosByText(text) ?: return null
+        for (match in matches) {
+            val isExactMatch = match.text?.toString()?.trim()?.equals(text, ignoreCase = true) == true
+            if (!isExactMatch) {
+                match.recycle()
+                continue
+            }
+
+            var current: AccessibilityNodeInfo? = match
+            var depth = 0
+            while (current != null && depth < 6) {
+                if (current.isClickable) {
+                    return current
+                }
+                val parent = current.parent
+                if (current !== match) current.recycle()
+                current = parent
+                depth++
+            }
+            match.recycle()
+        }
+        return null
     }
 
     // Walks the current window's node tree collecting visible text, capped

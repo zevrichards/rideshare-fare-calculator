@@ -11,6 +11,12 @@
     <queries>
         <package android:name="com.waze" />
         <package android:name="com.google.android.apps.maps" />
+        <!-- Needed for getLaunchIntentForPackage to work on Android 11+ package
+             visibility rules. RideTriggerAccessibilityService briefly foregrounds
+             whichever of these isn't the one that just started a trip, to tap its
+             own online/offline toggle and avoid a double-booking. -->
+        <package android:name="production.ttrides.driver" />
+        <package android:name="product.allridi.driver" />
     </queries>
 
     <application
