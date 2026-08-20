@@ -97,8 +97,16 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         // looking for its online/offline toggle before giving up -- without
         // this, a toggle that's never found would leave every future visit
         // to that app (for unrelated reasons) mistakenly treated as still
-        // pending a toggle.
-        private const val MAX_TOGGLE_ATTEMPTS = 4
+        // pending a toggle. TTRS needs two real steps (open its drawer, then
+        // find the toggle inside it -- see performPendingToggle), so this
+        // allows enough headroom for that plus a loading screen in between.
+        private const val MAX_TOGGLE_ATTEMPTS = 6
+
+        // Confirmed from a real log: TTRS's toggle isn't on its home screen
+        // (that shows "ONLINE"/a "REGULAR"-style request card, never a bare
+        // "ON"/"OFF") -- it's inside the drawer menu, opened via this real,
+        // stable id.
+        private const val TTRS_MENU_BTN_ID = "menuBtn"
     }
 
     // Describes an in-progress attempt to tap the other app's online/offline
@@ -107,11 +115,15 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // MAX_TOGGLE_ATTEMPTS.
     private data class PendingToggle(
         val targetPackage: String,
-        // The exact text currently shown on the toggle we're about to tap
-        // ("ON" to switch it off, "OFF" to switch it back on).
+        // The text shown on the toggle we're about to tap ("ON" to switch it
+        // off, "OFF" to switch it back on) -- matched exactly for Allridi,
+        // as a compound-label suffix for TTRS (see findToggleNode).
         val searchText: String,
         val returnToPackage: String?,
         var attempts: Int = 0,
+        // TTRS-only: whether we've already tapped menuBtn to open its
+        // drawer, where the actual toggle lives.
+        var openedDrawer: Boolean = false,
     )
 
     private var pendingToggle: PendingToggle? = null
@@ -286,22 +298,43 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         logBoth("launchApp: launched $packageName")
     }
 
-    // Best-effort, not yet confirmed against a real toggle in either app --
-    // the toggle has no stable id (same story as driverStartRideBtn
-    // earlier), so this searches for a node whose own text is exactly
-    // pending.searchText and climbs to its nearest clickable ancestor
-    // (matching the pattern of custom touch wrappers seen elsewhere in
-    // these apps). Retries across up to MAX_TOGGLE_ATTEMPTS settled
-    // screens, since the target app may still be mid-launch (splash/
-    // loading) the first time this fires. Diagnostic logging will show
-    // what's actually there if this doesn't match on a real ride.
+    // Best-effort -- neither toggle has a stable id (same story as
+    // driverStartRideBtn earlier). Allridi's toggle is a standalone
+    // "ON"/"OFF" label directly on its home screen; TTRS's is a compound
+    // "TT RideShare Driver ON"/"OFF" label inside its drawer menu, which
+    // must be opened first via the real menuBtn id (see findToggleNode).
+    // Retries across up to MAX_TOGGLE_ATTEMPTS settled screens, since the
+    // target app may still be mid-launch (splash/loading), or TTRS's drawer
+    // may take an extra screen to open. Diagnostic logging will show what's
+    // actually there if this doesn't match on a real ride.
     private fun performPendingToggle(packageName: String) {
         val pending = pendingToggle ?: return
         pending.attempts++
 
         val root = rootInActiveWindow
-        val toggleNode = root?.let { findToggleNode(it, pending.searchText) }
-        root?.recycle()
+        if (root == null) {
+            logBoth("toggle: no root for $packageName (attempt ${pending.attempts})")
+            giveUpIfExhausted(pending)
+            return
+        }
+
+        if (packageName == "production.ttrides.driver" && !pending.openedDrawer) {
+            val menuBtn = root.findAccessibilityNodeInfosByViewId("$packageName:id/$TTRS_MENU_BTN_ID")?.firstOrNull()
+            if (menuBtn != null) {
+                menuBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                menuBtn.recycle()
+                pending.openedDrawer = true
+                logBoth("toggle: opened TTRS drawer (attempt ${pending.attempts})")
+            } else {
+                logBoth("toggle: TTRS menuBtn not found yet (attempt ${pending.attempts})")
+            }
+            root.recycle()
+            giveUpIfExhausted(pending)
+            return
+        }
+
+        val toggleNode = findToggleNode(root, pending.searchText, packageName)
+        root.recycle()
 
         if (toggleNode != null) {
             val result = toggleNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -322,23 +355,35 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
 
         logBoth("toggle: '${pending.searchText}' not found for $packageName (attempt ${pending.attempts})")
+        giveUpIfExhausted(pending)
+    }
+
+    private fun giveUpIfExhausted(pending: PendingToggle) {
         if (pending.attempts >= MAX_TOGGLE_ATTEMPTS) {
-            logBoth("toggle: giving up for $packageName after ${pending.attempts} attempts")
+            logBoth("toggle: giving up for ${pending.targetPackage} after ${pending.attempts} attempts")
             pendingToggle = null
         }
     }
 
-    // Searches for a node whose own text is exactly `text` (not a substring
-    // match, e.g. "ON" won't match "ONLINE"), then climbs its parent chain
-    // looking for the nearest clickable ancestor -- the actual toggle is
-    // very likely a custom touch container wrapping a plain label, the same
-    // pattern seen with driverStartRideBtn. Returns an un-recycled node the
-    // caller owns; all other nodes visited are recycled internally.
-    private fun findToggleNode(root: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
+    // Searches for a node matching `text` ("ON" or "OFF"), then climbs its
+    // parent chain looking for the nearest clickable ancestor -- the actual
+    // toggle is very likely a custom touch container wrapping a plain
+    // label, the same pattern seen with driverStartRideBtn. Matching is
+    // package-specific: Allridi's label is exactly "ON"/"OFF" (so this
+    // avoids substring false-matches like "ONLINE"); TTRS's is a compound
+    // "TT RideShare Driver ON"/"OFF" label, so it matches by suffix there
+    // instead. Returns an un-recycled node the caller owns; all other nodes
+    // visited are recycled internally.
+    private fun findToggleNode(root: AccessibilityNodeInfo, text: String, packageName: String): AccessibilityNodeInfo? {
         val matches = root.findAccessibilityNodeInfosByText(text) ?: return null
         for (match in matches) {
-            val isExactMatch = match.text?.toString()?.trim()?.equals(text, ignoreCase = true) == true
-            if (!isExactMatch) {
+            val ownText = match.text?.toString()?.trim()
+            val isMatch = if (packageName == "production.ttrides.driver") {
+                ownText?.endsWith(" $text", ignoreCase = true) == true || ownText.equals(text, ignoreCase = true)
+            } else {
+                ownText.equals(text, ignoreCase = true)
+            }
+            if (!isMatch) {
                 match.recycle()
                 continue
             }
