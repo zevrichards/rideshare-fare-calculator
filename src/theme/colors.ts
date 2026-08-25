@@ -15,6 +15,7 @@ export interface ThemeColors {
   onPrimary: string;
   danger: string;
   onDanger: string;
+  success: string;
   disclaimerText: string;
   bannerBg: string;
   bannerText: string;
@@ -37,6 +38,7 @@ const lightColors: ThemeColors = {
   onPrimary: '#ffffff',
   danger: '#d93025',
   onDanger: '#ffffff',
+  success: '#1e8e3e',
   disclaimerText: '#d93025',
   bannerBg: '#fef7e0',
   bannerText: '#5f5024',
@@ -62,6 +64,7 @@ const darkColors: ThemeColors = {
   onPrimary: '#ffffff',
   danger: '#ff5252',
   onDanger: '#ffffff',
+  success: '#4cbb6c',
   disclaimerText: '#ff6b6b',
   bannerBg: '#3a2f10',
   bannerText: '#f5d67d',

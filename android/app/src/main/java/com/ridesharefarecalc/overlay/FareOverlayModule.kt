@@ -214,6 +214,19 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
         RateCardPreference.setOverlayScale(reactApplicationContext, value)
     }
 
+    // Mirrors the user's incoming-request alert thresholds the same
+    // write-through way -- RideTriggerAccessibilityService reads them fresh
+    // each time a request comes in.
+    @ReactMethod
+    fun setFarRequestThresholdKm(value: Double) {
+        RateCardPreference.setFarRequestThresholdKm(reactApplicationContext, value)
+    }
+
+    @ReactMethod
+    fun setNearRequestThresholdKm(value: Double) {
+        RateCardPreference.setNearRequestThresholdKm(reactApplicationContext, value)
+    }
+
     @ReactMethod
     fun getPreferredNavApp(promise: Promise) {
         promise.resolve(NavPreference.getPreferredPackage(reactApplicationContext))

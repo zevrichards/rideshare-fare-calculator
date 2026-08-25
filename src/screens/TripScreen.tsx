@@ -15,6 +15,7 @@ import RateCardSection from './RateCardSection';
 import DestinationSearch from './DestinationSearch';
 import MapPickerScreen from './MapPickerScreen';
 import OverlaySizeSection from './OverlaySizeSection';
+import RequestAlertThresholdsSection from './RequestAlertThresholdsSection';
 import {
   clearDiagnosticLog,
   copyToClipboard,
@@ -395,6 +396,8 @@ export default function TripScreen() {
           )}
         </View>
       )}
+
+      {isOverlaySupported && accessibilityServiceEnabled && <RequestAlertThresholdsSection />}
 
       {!tracking.isTracking && (
         <RateCardSection

@@ -18,6 +18,8 @@ object RateCardPreference {
     private const val KEY_SELECTED_RATE_CARD_ID = "selected_rate_card_id"
     private const val KEY_SURGE_MULTIPLIER = "surge_multiplier"
     private const val KEY_OVERLAY_SCALE = "overlay_scale"
+    private const val KEY_FAR_REQUEST_THRESHOLD_KM = "far_request_threshold_km"
+    private const val KEY_NEAR_REQUEST_THRESHOLD_KM = "near_request_threshold_km"
 
     fun getRateCard(context: Context, id: String): RateCard {
         val default = RateCard.DEFAULTS.firstOrNull { it.id == id } ?: RateCard.TTRS
@@ -76,6 +78,33 @@ object RateCardPreference {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putFloat(KEY_OVERLAY_SCALE, value.toFloat())
+            .apply()
+    }
+
+    // User-adjustable distance thresholds for RequestAlertOverlay's
+    // incoming-request flash -- read fresh on each request, same as the
+    // rate card/surge/overlay scale above.
+    fun getFarRequestThresholdKm(context: Context): Double {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getFloat(KEY_FAR_REQUEST_THRESHOLD_KM, 5.0f).toDouble()
+    }
+
+    fun setFarRequestThresholdKm(context: Context, value: Double) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_FAR_REQUEST_THRESHOLD_KM, value.toFloat())
+            .apply()
+    }
+
+    fun getNearRequestThresholdKm(context: Context): Double {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getFloat(KEY_NEAR_REQUEST_THRESHOLD_KM, 1.0f).toDouble()
+    }
+
+    fun setNearRequestThresholdKm(context: Context, value: Double) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_NEAR_REQUEST_THRESHOLD_KM, value.toFloat())
             .apply()
     }
 }

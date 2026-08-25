@@ -1,9 +1,13 @@
 package com.ridesharefarecalc.overlay
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -134,6 +138,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // failed/retrying attempt doesn't lose track of which app is owed one.
     private var offlinedPackage: String? = null
 
+    // "pkg:distanceKm" of the last incoming request we flashed an alert
+    // for -- avoids re-flashing on every window-changed refire of the same
+    // still-on-screen request (its card can re-render, e.g. a countdown
+    // timer). Reset to null once the request screen is no longer showing,
+    // so a genuinely new request (even at the same distance) still alerts.
+    private var lastAlertedRequestKey: String? = null
+
     // Logs to both logcat (for a connected computer) and the on-device ring
     // buffer (see DiagnosticLog) -- the service typically fires while the
     // driver is out on the road with no computer around, so the ring buffer,
@@ -205,11 +216,116 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             logBoth("Daily earnings detected pkg=$packageName amount=$amount")
             DailyEarnings.record(this, packageName, amount)
         }
+
+        handleIncomingRequest(packageName, texts)
     }
 
     private fun isRideEndedScreen(packageName: String, texts: List<String>): Boolean {
         val required = RIDE_ENDED_MARKERS_BY_PACKAGE[packageName] ?: return false
         return required.all { marker -> texts.any { it.contains(marker) } }
+    }
+
+    // A quick visual/haptic distance cue for an incoming request, so the
+    // driver can decide fast without reading the whole card -- red beyond
+    // the user's far threshold, green under their near threshold, nothing
+    // in between. Purely a signal: the driver still taps Accept or Reject
+    // themselves, same as always -- this never touches the request.
+    private fun handleIncomingRequest(packageName: String, texts: List<String>) {
+        val root = rootInActiveWindow // ?: return emptyList()
+
+        val distanceKm = detectIncomingRequestDistanceKm(packageName, texts)
+        if (distanceKm == null) {
+            lastAlertedRequestKey = null
+            return
+        }
+
+        val key = "$packageName:$distanceKm"
+        if (key == lastAlertedRequestKey) return
+        lastAlertedRequestKey = key
+
+        // Read fresh each time (same pattern as the rate card/surge/overlay
+        // scale) -- these are user-adjustable sliders in TripScreen.
+        val farThresholdKm = RateCardPreference.getFarRequestThresholdKm(this)
+        val nearThresholdKm = RateCardPreference.getNearRequestThresholdKm(this)
+        // val color = when {
+        //     distanceKm > farThresholdKm -> RequestAlertOverlay.AlertColor.RED
+        //     distanceKm < nearTshresholdKm -> RequestAlertOverlay.AlertColor.GREEN
+        //     else -> null
+        // } ?: return
+
+        val searchText = when {
+            distanceKm > farThresholdKm -> "Accept"
+            distanceKm < nearThresholdKm -> "Reject"
+            else -> null
+        } ?: return
+
+        val ThresholdBtn = findToggleNode(root, searchText, packageName)
+        root.recycle()
+
+        if (ThresholdBtn != null) {
+            val result = ThresholdBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            ThresholdBtn.recycle()
+            logBoth(
+                "Tapped '${searchText}' for $packageName, result=$result",
+            )
+            return
+        }
+        
+
+        // logBoth("Incoming request alert pkg=$packageName distanceKm=$distanceKm color=$color")
+        // RequestAlertOverlay.flash(this, color)
+        // vibrateForAlert(color)
+    }
+
+    // Each app's incoming-request card shows distance differently
+    // (confirmed from real logs): TTRS as "<n> km away" alongside an exact
+    // "Accept" entry; Allridi as a bare "<n> km" alongside exact "Accept"
+    // and "REJECT" entries. Gating on those companion entries keeps this
+    // from matching the ride-active screen's own distinct "<n> km" entry
+    // (see kmEntryPattern/extractDropAddress), since that screen never
+    // shows Accept/REJECT.
+    private fun detectIncomingRequestDistanceKm(packageName: String, texts: List<String>): Double? =
+        when (packageName) {
+            "production.ttrides.driver" -> {
+                val hasAccept = texts.any { it.equals("Accept", ignoreCase = true) }
+                val awayText = texts.firstOrNull { kmAwayPattern.containsMatchIn(it) }
+                if (hasAccept && awayText != null) {
+                    kmAwayPattern.find(awayText)?.groupValues?.get(1)?.toDoubleOrNull()
+                } else {
+                    null
+                }
+            }
+            "product.allridi.driver" -> {
+                val hasAccept = texts.any { it.equals("Accept", ignoreCase = true) }
+                val hasReject = texts.any { it.equals("REJECT", ignoreCase = true) }
+                val kmText = texts.firstOrNull { kmEntryPattern.matches(it.trim()) }
+                if (hasAccept && hasReject && kmText != null) {
+                    parseCurrency(kmText)
+                } else {
+                    null
+                }
+            }
+            else -> null
+        }
+
+    private fun vibrateForAlert(color: RequestAlertOverlay.AlertColor) {
+        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
+        // Short single buzz for a close, worth-grabbing request; a longer
+        // double buzz for a far one worth skipping.
+        val pattern = when (color) {
+            RequestAlertOverlay.AlertColor.GREEN -> longArrayOf(0, 150)
+            RequestAlertOverlay.AlertColor.RED -> longArrayOf(0, 300, 150, 300)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(pattern, -1)
+        }
+    }
+
+    private fun AutoAccept() {
+        
     }
 
     private fun startTripIfNeeded(packageName: String, screenDropAddress: String? = null) {
@@ -380,7 +496,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             val ownText = match.text?.toString()?.trim()
             val isMatch = if (packageName == "production.ttrides.driver") {
                 ownText?.endsWith(" $text", ignoreCase = true) == true || ownText.equals(text, ignoreCase = true)
-            } else {
+            } else { //allridi
                 ownText.equals(text, ignoreCase = true)
             }
             if (!isMatch) {
@@ -435,6 +551,10 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // confirmed ride-active screen (see handleWindowStateChanged), so
     // neither should false-match similar-looking text elsewhere.
     private val kmEntryPattern = Regex("""^\d+(\.\d+)?\s*km$""")
+
+    // Matches TTRS's incoming-request distance text, e.g. "2.14 km away" --
+    // used by detectIncomingRequestDistanceKm below.
+    private val kmAwayPattern = Regex("""(\d+(\.\d+)?)\s*km\s*away""", RegexOption.IGNORE_CASE)
 
     private fun extractDropAddress(texts: List<String>): String? {
         val dropOffLabelIndex = texts.indexOfFirst { it.equals("Drop off at", ignoreCase = true) }

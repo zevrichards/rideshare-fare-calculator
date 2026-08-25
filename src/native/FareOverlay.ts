@@ -21,6 +21,8 @@ interface FareOverlayNativeModule {
   setRateCard(cardJson: string): void;
   setSurgeMultiplier(value: number): void;
   setOverlayScale(value: number): void;
+  setFarRequestThresholdKm(value: number): void;
+  setNearRequestThresholdKm(value: number): void;
   addListener(eventName: string): void;
   removeListeners(count: number): void;
 }
@@ -177,6 +179,14 @@ export function mirrorSurgeMultiplier(value: number): void {
 
 export function mirrorOverlayScale(value: number): void {
   nativeModule?.setOverlayScale(value);
+}
+
+export function mirrorFarRequestThresholdKm(value: number): void {
+  nativeModule?.setFarRequestThresholdKm(value);
+}
+
+export function mirrorNearRequestThresholdKm(value: number): void {
+  nativeModule?.setNearRequestThresholdKm(value);
 }
 
 export function subscribeToTripCompleted(
