@@ -312,7 +312,7 @@ export default function TripScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.container}>
       <Text style={styles.title}>Fare Calculator</Text>
 
       {hasDailyEarnings && (
@@ -517,17 +517,20 @@ export default function TripScreen() {
           </Pressable>
         </View>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
 const createStyles = (colors: ThemeColors) =>
   StyleSheet.create({
-    container: {
+    scrollContainer: {
       flex: 1,
+      backgroundColor: colors.background,
+    },
+    container: {
+      flexGrow: 1,
       padding: 24,
       justifyContent: 'center',
-      backgroundColor: colors.background,
     },
     title: {
       fontSize: 28,
