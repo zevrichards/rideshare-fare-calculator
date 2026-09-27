@@ -63,6 +63,14 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         )
 
         private const val MAX_TOGGLE_ATTEMPTS = 6
+        private const val MAX_NAV_BUTTON_ATTEMPTS = 6
+
+        // Best-guess contentDescription substrings for the icon-only "start navigation"
+        // button on the ride-active screen. Unconfirmed -- if this misses, the diagnostic
+        // log dump of clickable icon descriptors will show the real one to hardcode.
+        private val NAV_BUTTON_DESC_CANDIDATES = listOf(
+            "navigate", "navigation", "start navigation", "directions", "waze", "google maps", "maps"
+        )
     }
 
     /**
@@ -74,11 +82,17 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         val returnToPackage: String?,
         var attempts: Int = 0,
         var openedDrawer: Boolean = false,
+        val pressNavOnReturn: Boolean = false,
     )
 
     private var pendingToggle: PendingToggle? = null
     private var offlinedPackage: String? = null
     private var lastAlertedRequestKey: String? = null
+
+    // Set once we've returned to the ride-active app after toggling the other app offline;
+    // triggers a one-shot attempt to tap the "start navigation" icon button.
+    private var pendingNavButtonPackage: String? = null
+    private var navButtonAttempts = 0
     
     // Flag to wait for payment screen dismissal before restoring the other app online
     private var pendingPaymentDismissalPackage: String? = null
@@ -120,8 +134,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Check if the user clicked a Done/Close button on the payment screen
-        if (pendingPaymentDismissalPackage == packageName) {
+        // Check if the user clicked a Done/Close button on the payment screen.
+        // Allridi has a second "rate the rider" screen (with its own Close button) after
+        // the payment summary's Close, so an immediate trigger here would fire a step too
+        // early -- for that package we rely solely on the HOME_MAP_MARKERS detection in
+        // handleWindowStateChanged, which only fires once the driver is actually back at the
+        // map (i.e. past both closes).
+        if (pendingPaymentDismissalPackage == packageName && packageName != "product.allridi.driver") {
             val clickedText = text ?: contentDesc ?: ""
             if (PAYMENT_DISMISS_BUTTON_TEXTS.any { it.equals(clickedText, ignoreCase = true) }) {
                 logBoth("Driver clicked '$clickedText' to dismiss payment screen on $packageName")
@@ -138,6 +157,10 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         if (packageName == pendingToggle?.targetPackage) {
             performPendingToggle(packageName)
+        }
+
+        if (packageName == pendingNavButtonPackage) {
+            attemptPressNavigationButton(packageName)
         }
 
         if (texts.any { text -> RIDE_ACTIVE_MARKERS.any { marker -> text.contains(marker) } }) {
@@ -262,7 +285,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         val otherPkg = otherPackage(packageName)
         if (otherPkg != null) {
-            triggerToggle(target = otherPkg, searchText = "ON", returnTo = packageName)
+            triggerToggle(target = otherPkg, searchText = "ON", returnTo = packageName, pressNavOnReturn = true)
         }
     }
 
@@ -297,9 +320,14 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun triggerToggle(target: String, searchText: String, returnTo: String?) {
+    private fun triggerToggle(target: String, searchText: String, returnTo: String?, pressNavOnReturn: Boolean = false) {
         logBoth("Foregrounding $target to tap its '$searchText' toggle")
-        pendingToggle = PendingToggle(targetPackage = target, searchText = searchText, returnToPackage = returnTo)
+        pendingToggle = PendingToggle(
+            targetPackage = target,
+            searchText = searchText,
+            returnToPackage = returnTo,
+            pressNavOnReturn = pressNavOnReturn,
+        )
         launchApp(target)
     }
 
@@ -369,7 +397,14 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
             val returnTo = pending.returnToPackage
             if (returnTo != null) {
-                Handler(Looper.getMainLooper()).postDelayed({ launchApp(returnTo) }, 1500)
+                val pressNavOnReturn = pending.pressNavOnReturn
+                Handler(Looper.getMainLooper()).postDelayed({
+                    launchApp(returnTo)
+                    if (pressNavOnReturn) {
+                        pendingNavButtonPackage = returnTo
+                        navButtonAttempts = 0
+                    }
+                }, 1500)
             }
             return
         }
@@ -391,6 +426,93 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         if (pending.attempts >= MAX_TOGGLE_ATTEMPTS) {
             logBoth("toggle: giving up for ${pending.targetPackage} after ${pending.attempts} attempts")
             pendingToggle = null
+        }
+    }
+
+    /**
+     * One-shot (with retries) attempt to tap the icon-only "start navigation" button on the
+     * ride-active screen, after we've returned from toggling the other app offline.
+     */
+    private fun attemptPressNavigationButton(packageName: String) {
+        navButtonAttempts++
+        val root = rootInActiveWindow
+        if (root == null) {
+            logBoth("navBtn: no root for $packageName (attempt $navButtonAttempts)")
+            scheduleNavButtonRetryOrGiveUp(packageName)
+            return
+        }
+
+        val navBtn = findNavigationButton(root)
+        if (navBtn != null) {
+            val result = navBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            navBtn.recycle()
+            root.recycle()
+            logBoth("navBtn: tapped navigation button for $packageName (attempt $navButtonAttempts), result=$result")
+            pendingNavButtonPackage = null
+            return
+        }
+
+        // Diagnostic dump so the real contentDescription can be identified if the guess misses.
+        val descriptors = mutableListOf<String>()
+        collectClickableDescriptors(root, descriptors)
+        root.recycle()
+        logBoth("navBtn: no match on attempt $navButtonAttempts for $packageName. Clickable icons: ${descriptors.joinToString(" | ")}")
+
+        scheduleNavButtonRetryOrGiveUp(packageName)
+    }
+
+    private fun scheduleNavButtonRetryOrGiveUp(packageName: String) {
+        if (navButtonAttempts >= MAX_NAV_BUTTON_ATTEMPTS) {
+            logBoth("navBtn: giving up for $packageName after $navButtonAttempts attempts")
+            pendingNavButtonPackage = null
+            return
+        }
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (pendingNavButtonPackage == packageName) {
+                attemptPressNavigationButton(packageName)
+            }
+        }, 500)
+    }
+
+    private fun findNavigationButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.trim()?.lowercase(Locale.US)
+        if (desc != null && NAV_BUTTON_DESC_CANDIDATES.any { desc.contains(it) }) {
+            var current: AccessibilityNodeInfo? = node
+            var depth = 0
+            while (current != null && depth < 4) {
+                if (current.isClickable) {
+                    return current
+                }
+                current = current.parent
+                depth++
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findNavigationButton(child)
+            if (result != null) {
+                if (result !== child) child.recycle()
+                return result
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun collectClickableDescriptors(node: AccessibilityNodeInfo, out: MutableList<String>) {
+        if (out.size >= 15) return
+        if (node.isClickable) {
+            val desc = node.contentDescription?.toString()?.trim()
+            val cls = node.className?.toString()?.substringAfterLast('.')
+            if (cls == "ImageButton" || cls == "ImageView" || !desc.isNullOrEmpty()) {
+                out.add("class=$cls id=${node.viewIdResourceName} desc=$desc")
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectClickableDescriptors(child, out)
+            child.recycle()
         }
     }
 
