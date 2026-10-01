@@ -39,19 +39,29 @@ describe('calculateFare with TTRS (tiered, minimum $28, no surge)', () => {
   });
 });
 
-describe('calculateFare with Allridi (flat rate, minimum $22, supports surge)', () => {
+describe('calculateFare with Allridi (tiered beyond 20km, minimum $22, supports surge)', () => {
   it('floors at the minimum fare for zero distance and zero time', () => {
     expect(calculateFare(ALLRIDI_RATE_CARD, 0, 0)).toBe(22);
   });
 
-  it('charges a flat per-km rate with no long-distance tier', () => {
-    // raw = 15 + 30*1.55 + 10*1.1 = 72.5
-    expect(calculateFare(ALLRIDI_RATE_CARD, 30, 10)).toBeCloseTo(72.5, 5);
+  it('charges the standard per-km rate below the 20km threshold, floored at the minimum', () => {
+    // raw = 15 + 10*1.55 + 15*1.1 = 47, above the $22 minimum
+    expect(calculateFare(ALLRIDI_RATE_CARD, 10, 15)).toBeCloseTo(47, 5);
   });
 
-  it('applies the surge multiplier to the whole calculated fare', () => {
-    // raw = (15 + 30*1.55 + 10*1.1) * 1.2 = 72.5 * 1.2 = 87
-    expect(calculateFare(ALLRIDI_RATE_CARD, 30, 10, 1.2)).toBeCloseTo(87, 5);
+  it('charges the standard rate for the full trip exactly at the threshold', () => {
+    // raw = 15 + 20*1.55 = 46
+    expect(calculateFare(ALLRIDI_RATE_CARD, 20, 0)).toBeCloseTo(46, 5);
+  });
+
+  it('charges the higher rate only for distance beyond the threshold', () => {
+    // raw = 15 + 20*1.55 + 10*3 + 10*1.1 = 87
+    expect(calculateFare(ALLRIDI_RATE_CARD, 30, 10)).toBeCloseTo(87, 5);
+  });
+
+  it('applies the surge multiplier to the whole calculated fare, including the beyond-threshold tier', () => {
+    // raw = (15 + 20*1.55 + 10*3 + 10*1.1) * 1.2 = 87 * 1.2 = 104.4
+    expect(calculateFare(ALLRIDI_RATE_CARD, 30, 10, 1.2)).toBeCloseTo(104.4, 5);
   });
 
   it('does not floor a surged fare that already exceeds the minimum', () => {
@@ -88,11 +98,11 @@ describe('calculateFareBreakdown', () => {
   });
 
   it('reports the effective surge multiplier and applies it to the total for Allridi', () => {
-    // subtotal = 15 + 30*1.55 + 10*1.1 = 72.5, total = 72.5*1.2 = 87
+    // subtotal = 15 + 20*1.55 + 10*3 + 10*1.1 = 87, total = 87*1.2 = 104.4
     const breakdown = calculateFareBreakdown(ALLRIDI_RATE_CARD, 30, 10, 1.2);
-    expect(breakdown.subtotal).toBeCloseTo(72.5, 5);
+    expect(breakdown.subtotal).toBeCloseTo(87, 5);
     expect(breakdown.surgeMultiplier).toBe(1.2);
-    expect(breakdown.total).toBeCloseTo(87, 5);
+    expect(breakdown.total).toBeCloseTo(104.4, 5);
     expect(breakdown.minimumApplied).toBe(false);
   });
 
