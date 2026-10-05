@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {AppState, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
@@ -104,6 +104,7 @@ export default function TripScreen() {
   const [showDiagnosticLog, setShowDiagnosticLog] = useState(false);
   const [diagnosticLogText, setDiagnosticLogText] = useState('');
   const [logCopied, setLogCopied] = useState(false);
+  const logScrollRef = useRef<ScrollView>(null);
   const [dailyEarnings, setDailyEarnings] = useState<DailyEarnings | null>(null);
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
     NAV_APPS.WAZE,
@@ -374,7 +375,11 @@ export default function TripScreen() {
           </Pressable>
           {showDiagnosticLog && (
             <View style={styles.diagnosticLogBox}>
-              <ScrollView style={styles.diagnosticLogScroll}>
+              <ScrollView
+                ref={logScrollRef}
+                style={styles.diagnosticLogScroll}
+                nestedScrollEnabled
+                onContentSizeChange={() => logScrollRef.current?.scrollToEnd({animated: false})}>
                 <Text style={styles.diagnosticLogText}>
                   {diagnosticLogText || 'No auto-start activity recorded yet.'}
                 </Text>
@@ -654,7 +659,7 @@ const createStyles = (colors: ThemeColors) =>
       backgroundColor: colors.surface,
     },
     diagnosticLogScroll: {
-      maxHeight: 200,
+      maxHeight: 320,
     },
     diagnosticLogText: {
       fontSize: 12,

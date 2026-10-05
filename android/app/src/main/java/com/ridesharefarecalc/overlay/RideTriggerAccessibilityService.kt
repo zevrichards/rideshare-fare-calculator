@@ -71,6 +71,32 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         fun parseSurgeMultiplier(texts: List<String>): Double? =
             texts.firstNotNullOfOrNull { surgeTextPattern.find(it.trim())?.groupValues?.get(1)?.toDoubleOrNull() }
 
+        data class Box(val left: Int, val top: Int, val right: Int, val bottom: Int) {
+            val width get() = right - left
+            val height get() = bottom - top
+            val centerX get() = (left + right) / 2
+            val centerY get() = (top + bottom) / 2
+        }
+
+        // Small square-ish control (5-20% of screen width) on the right side of the screen.
+        fun isNavArrowCandidate(box: Box, screenWidth: Int): Boolean {
+            val min = screenWidth * 5 / 100
+            val max = screenWidth * 20 / 100
+            return box.width in min..max && box.height in min..max && box.centerX > screenWidth * 70 / 100
+        }
+
+        // Lowest candidate wins, then the rightmost among those at about the same height
+        // (3% of screen width tolerance): picks the arrow over the locate-me button above it
+        // and over Allridi's call button beside it.
+        fun pickNavArrowIndex(boxes: List<Box>, screenWidth: Int): Int? {
+            if (boxes.isEmpty()) return null
+            val lowest = boxes.maxOf { it.centerY }
+            val tolerance = screenWidth * 3 / 100
+            return boxes.indices
+                .filter { boxes[it].centerY >= lowest - tolerance }
+                .maxByOrNull { boxes[it].centerX }
+        }
+
         // Best-guess contentDescription substrings for the icon-only "start navigation"
         // button on the ride-active screen. Unconfirmed -- if this misses, the diagnostic
         // log dump of clickable icon descriptors will show the real one to hardcode.
@@ -203,7 +229,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         // If waiting for payment dismissal, check if driver has returned to the main map screen
         if (pendingPaymentDismissalPackage == packageName) {
-            val returnedToMap = texts.any { text -> HOME_MAP_MARKERS.any { marker -> text.contains(marker, ignoreCase = true) } }
+            // Allridi's online home screen shows just "ON" (offline: "OFF"), none of the markers.
+            val returnedToMap = texts.any { text -> HOME_MAP_MARKERS.any { marker -> text.contains(marker, ignoreCase = true) } } ||
+                (packageName == "product.allridi.driver" && texts.any { it == "ON" || it == "OFF" })
             val isPaymentScreenStillVisible = isRideEndedScreen(packageName, texts)
             
             if (returnedToMap && !isPaymentScreenStillVisible) {
@@ -502,7 +530,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             return
         }
 
+        // Neither app gives the arrow an id or description (logs show ImageButton, id=null,
+        // desc=null), so fall back to "small unlabeled clickable at the lower right", but only
+        // while the ride-active screen is actually showing.
+        val onRideActiveScreen = collectScreenTexts(packageName)
+            .any { text -> RIDE_ACTIVE_MARKERS.any { marker -> text.contains(marker) } }
         val navBtn = findNavigationButton(root)
+            ?: if (onRideActiveScreen) findNavigationButtonByGeometry(root) else null
         if (navBtn != null) {
             val result = navBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             navBtn.recycle()
@@ -569,6 +603,45 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             child.recycle()
         }
         return null
+    }
+
+    private fun findNavigationButtonByGeometry(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val screen = android.graphics.Rect()
+        root.getBoundsInScreen(screen)
+        val screenWidth = screen.width()
+        if (screenWidth <= 0) return null
+
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectSmallUnlabeledClickables(root, screenWidth, candidates)
+
+        val bestIndex = pickNavArrowIndex(candidates.map { toBox(boundsOf(it)) }, screenWidth)
+        val best = bestIndex?.let { candidates[it] }
+        candidates.filter { it !== best }.forEach { it.recycle() }
+        if (best != null) {
+            logBoth("navBtn: geometry fallback chose bounds=${boundsOf(best).flattenToString()}")
+        }
+        return best
+    }
+
+    private fun toBox(rect: android.graphics.Rect) = Box(rect.left, rect.top, rect.right, rect.bottom)
+
+    private fun boundsOf(node: AccessibilityNodeInfo): android.graphics.Rect =
+        android.graphics.Rect().also { node.getBoundsInScreen(it) }
+
+    private fun collectSmallUnlabeledClickables(
+        node: AccessibilityNodeInfo,
+        screenWidth: Int,
+        out: MutableList<AccessibilityNodeInfo>,
+    ) {
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val matches = child.isClickable &&
+                child.text.isNullOrEmpty() &&
+                child.contentDescription.isNullOrEmpty() &&
+                isNavArrowCandidate(toBox(boundsOf(child)), screenWidth)
+            collectSmallUnlabeledClickables(child, screenWidth, out)
+            if (matches) out.add(child) else child.recycle()
+        }
     }
 
     private fun collectClickableDescriptors(node: AccessibilityNodeInfo, out: MutableList<String>) {
