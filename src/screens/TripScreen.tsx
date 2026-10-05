@@ -17,6 +17,7 @@ import MapPickerScreen from './MapPickerScreen';
 import OverlaySizeSection from './OverlaySizeSection';
 import RequestAlertThresholdsSection from './RequestAlertThresholdsSection';
 import {
+  APP_VERSION,
   clearDiagnosticLog,
   copyToClipboard,
   DailyEarnings,
@@ -314,6 +315,7 @@ export default function TripScreen() {
   return (
     <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.container}>
       <Text style={styles.title}>Fare Calculator</Text>
+      {APP_VERSION && <Text style={styles.version}>v{APP_VERSION}</Text>}
 
       {hasDailyEarnings && (
         <View style={styles.earningsRow}>
@@ -535,9 +537,15 @@ const createStyles = (colors: ThemeColors) =>
     title: {
       fontSize: 28,
       fontWeight: '700',
-      marginBottom: 24,
+      marginBottom: 4,
       textAlign: 'center',
       color: colors.textPrimary,
+    },
+    version: {
+      fontSize: 12,
+      marginBottom: 24,
+      textAlign: 'center',
+      color: colors.textMuted,
     },
     earningsRow: {
       alignItems: 'center',

@@ -65,12 +65,19 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         private const val MAX_TOGGLE_ATTEMPTS = 6
         private const val MAX_NAV_BUTTON_ATTEMPTS = 6
 
+        private val surgeTextPattern = Regex("""^[xX×]\s*(\d+(\.\d+)?)$""")
+
+        // Allridi's incoming-request screen shows the surge as a standalone "x1.1" text.
+        fun parseSurgeMultiplier(texts: List<String>): Double? =
+            texts.firstNotNullOfOrNull { surgeTextPattern.find(it.trim())?.groupValues?.get(1)?.toDoubleOrNull() }
+
         // Best-guess contentDescription substrings for the icon-only "start navigation"
         // button on the ride-active screen. Unconfirmed -- if this misses, the diagnostic
         // log dump of clickable icon descriptors will show the real one to hardcode.
         private val NAV_BUTTON_DESC_CANDIDATES = listOf(
             "navigate", "navigation", "start navigation", "directions", "waze", "google maps", "maps"
         )
+        private val NAV_BUTTON_ID_CANDIDATES = listOf("navigat", "direction")
     }
 
     /**
@@ -93,6 +100,15 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // triggers a one-shot attempt to tap the "start navigation" icon button.
     private var pendingNavButtonPackage: String? = null
     private var navButtonAttempts = 0
+
+    // Surge from the most recent Allridi request screen, applied when that trip starts
+    // (the surge text isn't shown on the ride-active screen).
+    private var lastSeenAllridiSurge: Double? = null
+
+    // Allridi shows a payment summary (Close) and then a rate-the-rider screen (Close again).
+    private var allridiCloseClicks = 0
+
+    private var lastLoggedWindowKey: String? = null
     
     // Flag to wait for payment screen dismissal before restoring the other app online
     private var pendingPaymentDismissalPackage: String? = null
@@ -136,24 +152,36 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         // Check if the user clicked a Done/Close button on the payment screen.
         // Allridi has a second "rate the rider" screen (with its own Close button) after
-        // the payment summary's Close, so an immediate trigger here would fire a step too
-        // early -- for that package we rely solely on the HOME_MAP_MARKERS detection in
-        // handleWindowStateChanged, which only fires once the driver is actually back at the
-        // map (i.e. past both closes).
-        if (pendingPaymentDismissalPackage == packageName && packageName != "product.allridi.driver") {
+        // the payment summary's Close, so only the second dismiss click counts there.
+        if (pendingPaymentDismissalPackage == packageName) {
             val clickedText = text ?: contentDesc ?: ""
-            if (PAYMENT_DISMISS_BUTTON_TEXTS.any { it.equals(clickedText, ignoreCase = true) }) {
-                logBoth("Driver clicked '$clickedText' to dismiss payment screen on $packageName")
-                triggerPendingPostPaymentOnlineToggle(packageName)
+            val isAllridi = packageName == "product.allridi.driver"
+            val isDismissClick = PAYMENT_DISMISS_BUTTON_TEXTS.any { it.equals(clickedText, ignoreCase = true) } ||
+                (isAllridi && contentDesc?.contains("close", ignoreCase = true) == true)
+            if (isDismissClick) {
+                if (isAllridi) {
+                    allridiCloseClicks++
+                    logBoth("Allridi dismiss click #$allridiCloseClicks ('$clickedText')")
+                    if (allridiCloseClicks >= 2) {
+                        triggerPendingPostPaymentOnlineToggle(packageName)
+                    }
+                } else {
+                    logBoth("Driver clicked '$clickedText' to dismiss payment screen on $packageName")
+                    triggerPendingPostPaymentOnlineToggle(packageName)
+                }
             }
         }
     }
 
     private fun handleWindowStateChanged(event: AccessibilityEvent, packageName: String) {
         val eventText = event.text?.joinToString(" | ")
-        logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
-        val texts = collectScreenTexts()
-        logBoth("  screen context: ${describeScreen(texts)}")
+        val texts = collectScreenTexts(packageName)
+        val windowKey = "$packageName|${event.className}|$eventText|${describeScreen(texts)}"
+        if (windowKey != lastLoggedWindowKey) {
+            lastLoggedWindowKey = windowKey
+            logBoth("window changed pkg=$packageName class=${event.className} text=$eventText")
+            logBoth("  screen context: ${describeScreen(texts)}")
+        }
 
         if (packageName == pendingToggle?.targetPackage) {
             performPendingToggle(packageName)
@@ -203,43 +231,47 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             return
         }
 
-        val key = "$packageName:$distanceKm"
+        if (packageName == "product.allridi.driver") {
+            lastSeenAllridiSurge = parseSurgeMultiplier(texts) ?: 1.0
+        }
+
+        val key ="$packageName:$distanceKm"
         if (key == lastAlertedRequestKey) return
         lastAlertedRequestKey = key
 
-        // val farThresholdKm = RateCardPreference.getFarRequestThresholdKm(this)
-        // val nearThresholdKm = RateCardPreference.getNearRequestThresholdKm(this)
+        val farThresholdKm = RateCardPreference.getFarRequestThresholdKm(this)
+        val nearThresholdKm = RateCardPreference.getNearRequestThresholdKm(this)
 
-        // val actionText = when {
-        //     distanceKm < nearThresholdKm -> "Accept"
-        //     distanceKm > farThresholdKm -> if (packageName == "production.ttrides.driver") "Cancel" else "REJECT"
-        //     else -> null
-        // } ?: return
+        val actionText = when {
+            distanceKm < nearThresholdKm -> "Accept"
+            distanceKm > farThresholdKm -> if (packageName == "production.ttrides.driver") "Cancel" else "REJECT"
+            else -> null
+        } ?: return
 
-        // val root = rootInActiveWindow ?: return
-        // val actionBtn = findClickableActionButton(root, actionText)
-        // root.recycle()
+        val root = rootInActiveWindow ?: return
+        val actionBtn = findClickableActionButton(root, actionText)
+        root.recycle()
 
-        // if (actionBtn != null) {
-        //     val result = actionBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        //     actionBtn.recycle()
-        //     logBoth("Tapped '$actionText' for $packageName (dist: ${distanceKm}km), result=$result")
-        // } else {
-        //     logBoth("Could not immediately find '$actionText' on $packageName. Scheduling retry...")
+        if (actionBtn != null) {
+            val result = actionBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            actionBtn.recycle()
+            // logBoth("Tapped '$actionText' for $packageName (dist: ${distanceKm}km), result=$result")
+        } else {
+            // logBoth("Could not immediately find '$actionText' on $packageName. Scheduling retry...")
             
-        //     Handler(Looper.getMainLooper()).postDelayed({
-        //         val retryRoot = rootInActiveWindow ?: return@postDelayed
-        //         val retryBtn = findClickableActionButton(retryRoot, actionText)
-        //         retryRoot.recycle()
-        //         if (retryBtn != null) {
-        //             val res = retryBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        //             retryBtn.recycle()
-        //             logBoth("Retry tapped '$actionText' for $packageName, result=$res")
-        //         } else {
-        //             logBoth("Retry failed to find '$actionText' on $packageName")
-        //         }
-        //     }, 300)
-        // }
+            Handler(Looper.getMainLooper()).postDelayed({
+                val retryRoot = rootInActiveWindow ?: return@postDelayed
+                val retryBtn = findClickableActionButton(retryRoot, actionText)
+                retryRoot.recycle()
+                if (retryBtn != null) {
+                    val res = retryBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    retryBtn.recycle()
+                    // logBoth("Retry tapped '$actionText' for $packageName, result=$res")
+                } else {
+                    // logBoth("Retry failed to find '$actionText' on $packageName")
+                }
+            }, 300)
+        }
     }
 
     private fun detectIncomingRequestDistanceKm(packageName: String, texts: List<String>): Double? =
@@ -274,8 +306,17 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         val dropAddress = screenDropAddress ?: findDropAddress(packageName)
         logBoth("dropAddress=$dropAddress")
+        logClickableNodes("ride start $packageName")
 
         RateCardPreference.setSelectedRateCardId(this, RATE_CARD_ID_BY_PACKAGE.getValue(packageName))
+
+        if (packageName == "product.allridi.driver") {
+            lastSeenAllridiSurge?.let { surge ->
+                RateCardPreference.setSurgeMultiplier(this, surge)
+                logBoth("Applied Allridi surge x$surge from the request screen")
+            }
+            lastSeenAllridiSurge = null
+        }
 
         ContextCompat.startForegroundService(this, Intent(this, FareTrackingService::class.java))
 
@@ -306,6 +347,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         // Set pending dismissal flag so we wait for driver to close the summary screen
         pendingPaymentDismissalPackage = justEndedPackage
+        allridiCloseClicks = 0
     }
 
     /**
@@ -363,6 +405,20 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             return
         }
 
+        // When TTRS is offline its home screen has a big GO ONLINE button -- simpler and
+        // more reliable than the drawer toggle, so try it first.
+        if (packageName == "production.ttrides.driver" && pending.searchText == "OFF") {
+            val goOnlineBtn = findClickableActionButton(root, "GO ONLINE")
+            if (goOnlineBtn != null) {
+                val result = goOnlineBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                goOnlineBtn.recycle()
+                root.recycle()
+                logBoth("toggle: tapped 'GO ONLINE' for $packageName (attempt ${pending.attempts}), result=$result")
+                finishToggle(pending, packageName)
+                return
+            }
+        }
+
         // Handle opening TTRS side navigation drawer
         if (packageName == "production.ttrides.driver" && !pending.openedDrawer) {
             val menuBtn = root.findAccessibilityNodeInfosByViewId("$packageName:id/$TTRS_MENU_BTN_ID")?.firstOrNull()
@@ -392,26 +448,30 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             logBoth(
                 "toggle: tapped '${pending.searchText}' for $packageName (attempt ${pending.attempts}), result=$result",
             )
-            pendingToggle = null
-            offlinedPackage = if (pending.searchText == "ON") packageName else null
-
-            val returnTo = pending.returnToPackage
-            if (returnTo != null) {
-                val pressNavOnReturn = pending.pressNavOnReturn
-                Handler(Looper.getMainLooper()).postDelayed({
-                    launchApp(returnTo)
-                    if (pressNavOnReturn) {
-                        pendingNavButtonPackage = returnTo
-                        navButtonAttempts = 0
-                    }
-                }, 1500)
-            }
+            finishToggle(pending, packageName)
             return
         }
 
         logBoth("toggle: '${pending.searchText}' not found for $packageName (attempt ${pending.attempts})")
         scheduleNextToggleRetry(packageName)
         giveUpIfExhausted(pending)
+    }
+
+    private fun finishToggle(pending: PendingToggle, packageName: String) {
+        pendingToggle = null
+        offlinedPackage = if (pending.searchText == "ON") packageName else null
+
+        val returnTo = pending.returnToPackage
+        if (returnTo != null) {
+            val pressNavOnReturn = pending.pressNavOnReturn
+            Handler(Looper.getMainLooper()).postDelayed({
+                launchApp(returnTo)
+                if (pressNavOnReturn) {
+                    pendingNavButtonPackage = returnTo
+                    navButtonAttempts = 0
+                }
+            }, 1500)
+        }
     }
 
     private fun scheduleNextToggleRetry(packageName: String) {
@@ -461,6 +521,14 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         scheduleNavButtonRetryOrGiveUp(packageName)
     }
 
+    private fun logClickableNodes(tag: String) {
+        val root = rootInActiveWindow ?: return
+        val descriptors = mutableListOf<String>()
+        collectClickableDescriptors(root, descriptors)
+        root.recycle()
+        logBoth("clickables ($tag): ${descriptors.joinToString(" | ")}")
+    }
+
     private fun scheduleNavButtonRetryOrGiveUp(packageName: String) {
         if (navButtonAttempts >= MAX_NAV_BUTTON_ATTEMPTS) {
             logBoth("navBtn: giving up for $packageName after $navButtonAttempts attempts")
@@ -476,7 +544,10 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
     private fun findNavigationButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val desc = node.contentDescription?.toString()?.trim()?.lowercase(Locale.US)
-        if (desc != null && NAV_BUTTON_DESC_CANDIDATES.any { desc.contains(it) }) {
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US)
+        val descMatches = desc != null && NAV_BUTTON_DESC_CANDIDATES.any { desc.contains(it) }
+        val idMatches = viewId != null && NAV_BUTTON_ID_CANDIDATES.any { viewId.contains(it) }
+        if (descMatches || idMatches) {
             var current: AccessibilityNodeInfo? = node
             var depth = 0
             while (current != null && depth < 4) {
@@ -501,13 +572,15 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     }
 
     private fun collectClickableDescriptors(node: AccessibilityNodeInfo, out: MutableList<String>) {
-        if (out.size >= 15) return
+        if (out.size >= 30) return
         if (node.isClickable) {
-            val desc = node.contentDescription?.toString()?.trim()
+            val bounds = android.graphics.Rect()
+            node.getBoundsInScreen(bounds)
             val cls = node.className?.toString()?.substringAfterLast('.')
-            if (cls == "ImageButton" || cls == "ImageView" || !desc.isNullOrEmpty()) {
-                out.add("class=$cls id=${node.viewIdResourceName} desc=$desc")
-            }
+            out.add(
+                "class=$cls id=${node.viewIdResourceName} desc=${node.contentDescription} " +
+                    "text=${node.text} bounds=${bounds.flattenToString()} children=${node.childCount}",
+            )
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -570,10 +643,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun collectScreenTexts(): List<String> {
+    // Events from a background app (TTRS fires constantly) arrive while the other app is on
+    // screen; reading the active window then would attribute that screen to the wrong app.
+    private fun collectScreenTexts(packageName: String): List<String> {
         val root = rootInActiveWindow ?: return emptyList()
         val texts = mutableListOf<String>()
         try {
+            if (root.packageName?.toString() != packageName) return emptyList()
             collectText(root, texts)
         } finally {
             root.recycle()

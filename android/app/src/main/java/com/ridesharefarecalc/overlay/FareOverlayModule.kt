@@ -15,6 +15,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
+import com.ridesharefarecalc.BuildConfig
 import org.json.JSONObject
 
 private fun TripSnapshot.toWritableMap(): WritableMap = Arguments.createMap().apply {
@@ -56,6 +57,9 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
     }
 
     override fun getName(): String = "FareOverlay"
+
+    override fun getConstants(): MutableMap<String, Any> =
+        mutableMapOf("appVersion" to BuildConfig.VERSION_NAME)
 
     @ReactMethod
     fun hasOverlayPermission(promise: Promise) {

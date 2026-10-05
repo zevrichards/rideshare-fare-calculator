@@ -16,7 +16,7 @@ import java.util.Locale
 object DiagnosticLog {
     private const val PREFS_NAME = "fare_overlay_prefs"
     private const val KEY_LOG = "diagnostic_log"
-    private const val MAX_ENTRIES = 100
+    private const val MAX_ENTRIES = 500
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 

@@ -2,6 +2,7 @@ import {NativeEventEmitter, NativeModules, Platform} from 'react-native';
 import {RateCard} from '../lib/rateCards';
 
 interface FareOverlayNativeModule {
+  appVersion?: string;
   hasOverlayPermission(): Promise<boolean>;
   requestOverlayPermission(): void;
   hasLocationPermission(): Promise<boolean>;
@@ -67,6 +68,8 @@ export const isOverlaySupported = Platform.OS === 'android';
 const nativeModule: FareOverlayNativeModule | null = isOverlaySupported
   ? NativeModules.FareOverlay
   : null;
+
+export const APP_VERSION: string | null = nativeModule?.appVersion ?? null;
 
 const emitter = nativeModule ? new NativeEventEmitter(NativeModules.FareOverlay) : null;
 
