@@ -66,6 +66,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         // TTRS's splash screen alone can take ~4s after launchApp, so budget by time, not attempts.
         private const val TOGGLE_TIMEOUT_MS = 15_000L
         private const val NAV_BUTTON_TIMEOUT_MS = 8_000L
+        private const val POST_CLOSE_WATCH_MS = 120_000L
 
         // The icon-only navigation arrow on each app's ride-active screen (ids taken from
         // the clickable-node dump logged at ride start).
@@ -113,6 +114,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
     // Allridi shows a payment summary (Close) and then a rate-the-rider screen (Close again).
     private var allridiCloseClicks = 0
+    private var postCloseWatchRunning = false
 
     private var lastLoggedWindowKey: String? = null
     
@@ -170,6 +172,8 @@ class RideTriggerAccessibilityService : AccessibilityService() {
                     logBoth("Allridi dismiss click #$allridiCloseClicks ('$clickedText')")
                     if (allridiCloseClicks >= 2) {
                         triggerPendingPostPaymentOnlineToggle(packageName)
+                    } else {
+                        startPostCloseWatch(packageName)
                     }
                 } else {
                     logBoth("Driver clicked '$clickedText' to dismiss payment screen on $packageName")
@@ -208,16 +212,21 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
 
         // If waiting for payment dismissal, check if driver has returned to the main map screen
-        if (pendingPaymentDismissalPackage == packageName) {
-            // Allridi's online home screen shows just "ON" (offline: "OFF"), none of the markers.
-            val returnedToMap = texts.any { text -> HOME_MAP_MARKERS.any { marker -> text.contains(marker, ignoreCase = true) } } ||
-                (packageName == "product.allridi.driver" && texts.any { it == "ON" || it == "OFF" })
-            val isPaymentScreenStillVisible = isRideEndedScreen(packageName, texts)
-            
-            if (returnedToMap && !isPaymentScreenStillVisible) {
-                logBoth("Main map screen detected after payment on $packageName. Restoring other app online.")
-                triggerPendingPostPaymentOnlineToggle(packageName)
-            }
+        if (pendingPaymentDismissalPackage == packageName && isBackAtMap(packageName, texts)) {
+            logBoth("Main map screen detected after payment on $packageName. Restoring other app online.")
+            triggerPendingPostPaymentOnlineToggle(packageName)
+        }
+
+        // After closing Allridi's payment screen, the driver is already in the other app:
+        // they want it back online, so don't wait for an Allridi screen that may never come.
+        val dismissPending = pendingPaymentDismissalPackage
+        if (dismissPending == "product.allridi.driver" &&
+            allridiCloseClicks >= 1 &&
+            packageName == otherPackage(dismissPending) &&
+            texts.isNotEmpty()
+        ) {
+            logBoth("Driver moved to $packageName after closing the payment screen. Restoring it online.")
+            triggerPendingPostPaymentOnlineToggle(dismissPending)
         }
 
         extractDailyEarnings(packageName, texts)?.let { amount ->
@@ -226,6 +235,50 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
 
         handleIncomingRequest(packageName, texts)
+    }
+
+    // Allridi's online home screen shows just "ON" (offline: "OFF"), none of the markers.
+    private fun isBackAtMap(packageName: String, texts: List<String>): Boolean {
+        val atMap = texts.any { text -> HOME_MAP_MARKERS.any { marker -> text.contains(marker, ignoreCase = true) } } ||
+            (packageName == "product.allridi.driver" && texts.any { it == "ON" || it == "OFF" })
+        return atMap && !isRideEndedScreen(packageName, texts)
+    }
+
+    // The close taps and the home screen don't always produce events (a ride's log went
+    // quiet for 13s after the first Close), so also poll the screen after that Close.
+    private fun startPostCloseWatch(packageName: String) {
+        if (postCloseWatchRunning) return
+        postCloseWatchRunning = true
+        val deadline = SystemClock.elapsedRealtime() + POST_CLOSE_WATCH_MS
+        var lastContext: String? = null
+        var dumpedClickables = false
+        val handler = Handler(Looper.getMainLooper())
+        val tick = object : Runnable {
+            override fun run() {
+                if (pendingPaymentDismissalPackage != packageName || SystemClock.elapsedRealtime() > deadline) {
+                    postCloseWatchRunning = false
+                    return
+                }
+                val texts = collectScreenTexts(packageName)
+                val context = describeScreen(texts)
+                if (texts.isNotEmpty() && context != lastContext) {
+                    lastContext = context
+                    logBoth("post-close screen: $context")
+                    if (!dumpedClickables) {
+                        dumpedClickables = true
+                        logClickableNodes("post-close $packageName")
+                    }
+                }
+                if (isBackAtMap(packageName, texts)) {
+                    postCloseWatchRunning = false
+                    logBoth("Post-close watch: back at the map on $packageName. Restoring other app online.")
+                    triggerPendingPostPaymentOnlineToggle(packageName)
+                    return
+                }
+                handler.postDelayed(this, 1000)
+            }
+        }
+        handler.postDelayed(tick, 1000)
     }
 
     private fun isRideEndedScreen(packageName: String, texts: List<String>): Boolean {
@@ -414,13 +467,17 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         // When TTRS is offline its home screen has a big GO ONLINE button -- simpler and
         // more reliable than the drawer toggle, so try it first.
-        if (packageName == "production.ttrides.driver" && pending.searchText == "OFF") {
+        if (packageName == "production.ttrides.driver") {
             val goOnlineBtn = findClickableActionButton(root, "GO ONLINE")
             if (goOnlineBtn != null) {
-                val result = goOnlineBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (pending.searchText == "OFF") {
+                    val result = goOnlineBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    logBoth("toggle: tapped 'GO ONLINE' for $packageName (attempt ${pending.attempts}), result=$result")
+                } else {
+                    logBoth("toggle: $packageName already offline (GO ONLINE showing), nothing to tap (attempt ${pending.attempts})")
+                }
                 goOnlineBtn.recycle()
                 root.recycle()
-                logBoth("toggle: tapped 'GO ONLINE' for $packageName (attempt ${pending.attempts}), result=$result")
                 finishToggle(pending, packageName)
                 return
             }
@@ -662,7 +719,12 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         val kmIndex = texts.indexOfFirst { kmEntryPattern.matches(it.trim()) }
         if (kmIndex <= 0) return null
-        return texts[kmIndex - 1]
+        // With no destination set the preceding text is a label, not an address.
+        val candidate = texts[kmIndex - 1]
+        if (RIDE_ACTIVE_MARKERS.any { candidate.contains(it) } || candidate.equals("Enter Destination", ignoreCase = true)) {
+            return null
+        }
+        return candidate
     }
 
     private fun extractDailyEarnings(packageName: String, texts: List<String>): Double? =
