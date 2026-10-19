@@ -651,8 +651,19 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             }
         }
 
+        // Look for the toggle on the current screen before touching the menu button: TTRS's
+        // drawer is often still open from last time, and tapping the menu button then would
+        // close it instead of opening it.
+        val toggleNode = findToggleNode(root, pending.searchText, packageName)
+        // The label shows the app's current state, so the opposite label means it's already
+        // where we want it (e.g. the driver took it offline by hand first).
+        val oppositeText = if (pending.searchText == "ON") "OFF" else "ON"
+        val alreadyThereNode = if (toggleNode == null) findToggleNode(root, oppositeText, packageName) else null
+
         // Handle opening TTRS side navigation drawer
-        if (packageName == "production.ttrides.driver" && !pending.openedDrawer) {
+        if (toggleNode == null && alreadyThereNode == null &&
+            packageName == "production.ttrides.driver" && !pending.openedDrawer
+        ) {
             val menuBtn = root.findAccessibilityNodeInfosByViewId("$packageName:id/$TTRS_MENU_BTN_ID")?.firstOrNull()
             if (menuBtn != null) {
                 menuBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -660,7 +671,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
                 pending.openedDrawer = true
                 logBoth("toggle: opened TTRS drawer (attempt ${pending.attempts}), awaiting menu animation...")
                 root.recycle()
-                
+
                 // Allow 400ms for drawer animation before scanning for toggle
                 Handler(Looper.getMainLooper()).postDelayed({
                     performPendingToggle(packageName)
@@ -670,12 +681,6 @@ class RideTriggerAccessibilityService : AccessibilityService() {
                 logBoth("toggle: TTRS menuBtn not found yet (attempt ${pending.attempts})")
             }
         }
-
-        val toggleNode = findToggleNode(root, pending.searchText, packageName)
-        // The label shows the app's current state, so the opposite label means it's already
-        // where we want it (e.g. the driver took it offline by hand first).
-        val oppositeText = if (pending.searchText == "ON") "OFF" else "ON"
-        val alreadyThereNode = if (toggleNode == null) findToggleNode(root, oppositeText, packageName) else null
         root.recycle()
 
         if (toggleNode != null) {
@@ -696,6 +701,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
 
         logBoth("toggle: '${pending.searchText}' not found for $packageName (attempt ${pending.attempts})")
+        if (pending.attempts == 3 || pending.attempts % 8 == 0) {
+            logBoth("toggle: screen while waiting: ${describeScreen(collectScreenTexts(packageName))}")
+        }
         retryOrGiveUp(pending)
     }
 
@@ -725,7 +733,13 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         pendingNavButtonPackage = packageName
         navButtonAttempts = 0
         navButtonStartedAt = SystemClock.elapsedRealtime()
-        navRetryScheduled = false
+        // Window events aren't guaranteed to arrive (none did when the other app was
+        // already offline), so kick off the first attempt ourselves.
+        navRetryScheduled = true
+        Handler(Looper.getMainLooper()).postDelayed({
+            navRetryScheduled = false
+            if (pendingNavButtonPackage == packageName) attemptPressNavigationButton(packageName)
+        }, 700)
     }
 
     // Flips both apps to the same state in turn (Allridi, then TTRS), then returns here.
@@ -970,8 +984,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // remaining time/distance (right after navigation starts that's the whole trip) and hand
     // it to the fare service. Polls because Waze's panel can fill in after its window opens.
     private fun maybeStartWazeWatch() {
-        val snapshot = FareTrackingService.activeSnapshot ?: return
-        if (snapshot.estimatedDistanceKm != null || wazeMetricsApplied || wazeWatchRunning) return
+        // Reads Waze once per trip even when an estimate already exists (logged, not applied),
+        // so what Waze actually shows can be verified from the diagnostic log.
+        if (FareTrackingService.activeSnapshot == null || wazeMetricsApplied || wazeWatchRunning) return
         wazeWatchRunning = true
         val deadline = SystemClock.elapsedRealtime() + WAZE_WATCH_MS
         var screensLogged = 0
@@ -979,8 +994,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         val handler = Handler(Looper.getMainLooper())
         val tick = object : Runnable {
             override fun run() {
-                val estimateExists = FareTrackingService.activeSnapshot?.estimatedDistanceKm != null
-                if (estimateExists || wazeMetricsApplied || SystemClock.elapsedRealtime() > deadline) {
+                if (FareTrackingService.activeSnapshot == null || wazeMetricsApplied ||
+                    SystemClock.elapsedRealtime() > deadline
+                ) {
                     wazeWatchRunning = false
                     return
                 }
@@ -989,14 +1005,20 @@ class RideTriggerAccessibilityService : AccessibilityService() {
                 if (metrics != null) {
                     wazeWatchRunning = false
                     wazeMetricsApplied = true
-                    logBoth("Waze metrics detected: time=${metrics.minutes} min, dist=${metrics.distanceKm} km")
-                    startService(
-                        Intent(this@RideTriggerAccessibilityService, FareTrackingService::class.java).apply {
-                            action = FareTrackingService.ACTION_UPDATE_WAZE_METRICS
-                            putExtra(FareTrackingService.EXTRA_WAZE_KM, metrics.distanceKm)
-                            putExtra(FareTrackingService.EXTRA_WAZE_MINUTES, metrics.minutes)
-                        },
+                    val hasEstimate = FareTrackingService.activeSnapshot?.estimatedDistanceKm != null
+                    logBoth(
+                        "Waze metrics detected: time=${metrics.minutes} min, dist=${metrics.distanceKm} km " +
+                            if (hasEstimate) "(trip already has an estimate, not applying)" else "(applying as the estimate)",
                     )
+                    if (!hasEstimate) {
+                        startService(
+                            Intent(this@RideTriggerAccessibilityService, FareTrackingService::class.java).apply {
+                                action = FareTrackingService.ACTION_UPDATE_WAZE_METRICS
+                                putExtra(FareTrackingService.EXTRA_WAZE_KM, metrics.distanceKm)
+                                putExtra(FareTrackingService.EXTRA_WAZE_MINUTES, metrics.minutes)
+                            },
+                        )
+                    }
                     return
                 }
                 val context = describeScreen(texts)
