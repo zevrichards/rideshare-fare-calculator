@@ -61,6 +61,12 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
     override fun getConstants(): MutableMap<String, Any> =
         mutableMapOf("appVersion" to BuildConfig.VERSION_NAME)
 
+    // Resolves false when the accessibility service isn't running.
+    @ReactMethod
+    fun setAllAppsOnline(online: Boolean, promise: Promise) {
+        promise.resolve(RideTriggerAccessibilityService.requestSetAllAppsOnline(online))
+    }
+
     @ReactMethod
     fun hasOverlayPermission(promise: Promise) {
         val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||

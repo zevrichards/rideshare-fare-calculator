@@ -52,6 +52,12 @@ class FareTrackingService : Service() {
         const val EXTRA_DEST_LAT = "destLat"
         const val EXTRA_DEST_LNG = "destLng"
 
+        // Fills in the trip estimate from Waze's on-screen time/distance when no route
+        // estimate exists; ignored once an estimate is already in place.
+        const val ACTION_UPDATE_WAZE_METRICS = "com.ridesharefarecalc.overlay.action.UPDATE_WAZE_METRICS"
+        const val EXTRA_WAZE_KM = "wazeKm"
+        const val EXTRA_WAZE_MINUTES = "wazeMinutes"
+
         private const val CHANNEL_ID = "fare_tracking"
         private const val NOTIFICATION_ID = 4201
         private const val MIN_USABLE_ACCURACY_METERS = 50f
@@ -113,9 +119,18 @@ class FareTrackingService : Service() {
         when (intent?.action) {
             ACTION_STOP -> stopTracking()
             ACTION_SET_DESTINATION -> attachDestination(intent)
+            ACTION_UPDATE_WAZE_METRICS -> applyWazeMetrics(intent)
             else -> startTracking(intent)
         }
         return START_NOT_STICKY
+    }
+
+    private fun applyWazeMetrics(intent: Intent?) {
+        if (!isTracking || estimatedDistanceKm != null) return
+        val km = intent?.getDoubleExtra(EXTRA_WAZE_KM, Double.NaN)?.takeIf { !it.isNaN() } ?: return
+        val minutes = intent.getDoubleExtra(EXTRA_WAZE_MINUTES, Double.NaN).takeIf { !it.isNaN() } ?: return
+        applyEstimate(km, minutes)
+        updateOverlay()
     }
 
     private fun attachDestination(intent: Intent?) {

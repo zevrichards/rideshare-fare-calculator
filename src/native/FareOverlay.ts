@@ -8,6 +8,7 @@ interface FareOverlayNativeModule {
   hasLocationPermission(): Promise<boolean>;
   hasAccessibilityServiceEnabled(): Promise<boolean>;
   requestAccessibilityServiceEnable(): void;
+  setAllAppsOnline(online: boolean): Promise<boolean>;
   getDiagnosticLog(): Promise<string>;
   clearDiagnosticLog(): void;
   copyToClipboard(text: string): void;
@@ -94,6 +95,15 @@ export async function hasAccessibilityServiceEnabled(): Promise<boolean> {
     return false;
   }
   return nativeModule.hasAccessibilityServiceEnabled();
+}
+
+// Flips both driver apps online/offline in turn. false means the accessibility
+// service wasn't running, so nothing happened.
+export async function setAllAppsOnline(online: boolean): Promise<boolean> {
+  if (!nativeModule) {
+    return false;
+  }
+  return nativeModule.setAllAppsOnline(online);
 }
 
 export function requestAccessibilityServiceEnable(): void {

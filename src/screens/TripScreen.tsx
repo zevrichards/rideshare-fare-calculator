@@ -33,6 +33,7 @@ import {
   openDefaultAppSettings,
   requestAccessibilityServiceEnable,
   requestOverlayPermission,
+  setAllAppsOnline,
   setPreferredNavApp,
 } from '../native/FareOverlay';
 import {ThemeColors, useThemeColors} from '../theme/colors';
@@ -105,6 +106,14 @@ export default function TripScreen() {
   const [diagnosticLogText, setDiagnosticLogText] = useState('');
   const [logCopied, setLogCopied] = useState(false);
   const logScrollRef = useRef<ScrollView>(null);
+  const [masterToggleError, setMasterToggleError] = useState<string | null>(null);
+
+  const handleMasterToggle = async (online: boolean) => {
+    const started = await setAllAppsOnline(online);
+    setMasterToggleError(
+      started ? null : "Couldn't reach the accessibility service -- is it still enabled?",
+    );
+  };
   const [dailyEarnings, setDailyEarnings] = useState<DailyEarnings | null>(null);
   const [preferredNavApp, setPreferredNavAppState] = useState<NavAppPackage>(
     NAV_APPS.WAZE,
@@ -366,6 +375,21 @@ export default function TripScreen() {
         </View>
       )}
 
+      {isOverlaySupported && accessibilityServiceEnabled && !tracking.isTracking && (
+        <View style={styles.masterToggleSection}>
+          <Text style={styles.settingsLabel}>Both apps (Allridi + TTRS)</Text>
+          <View style={styles.masterToggleRow}>
+            <Pressable style={styles.masterToggleButton} onPress={() => handleMasterToggle(true)}>
+              <Text style={styles.bannerButtonText}>Go Online</Text>
+            </Pressable>
+            <Pressable style={styles.masterToggleButton} onPress={() => handleMasterToggle(false)}>
+              <Text style={styles.bannerButtonText}>Go Offline</Text>
+            </Pressable>
+          </View>
+          {masterToggleError && <Text style={styles.error}>{masterToggleError}</Text>}
+        </View>
+      )}
+
       {isOverlaySupported && accessibilityServiceEnabled && (
         <View style={styles.diagnosticSection}>
           <Pressable onPress={handleToggleDiagnosticLog}>
@@ -603,6 +627,19 @@ const createStyles = (colors: ThemeColors) =>
       fontSize: 13,
       color: colors.textSecondary,
       marginBottom: 6,
+    },
+    masterToggleSection: {
+      marginBottom: 16,
+    },
+    masterToggleRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    masterToggleButton: {
+      backgroundColor: colors.bannerButtonBg,
+      borderRadius: 6,
+      paddingVertical: 8,
+      paddingHorizontal: 16,
     },
     navAppRow: {
       flexDirection: 'row',

@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Scoped strictly to TTRS and Allridi's driver apps: packageNames means
-  this service never receives events from any other app. Observe-only, no
-  gesture/action-injection capability is requested, only event listening +
-  reading the two apps' own screen content (canRetrieveWindowContent).
+  Scoped to TTRS and Allridi's driver apps plus Waze: packageNames means
+  this service never receives events from any other app. Waze is only read
+  (never acted on) to pick up its on-screen time/distance when a trip has
+  no route estimate. Observe-only, no gesture/action-injection capability
+  is requested, only event listening + reading those apps' own screen
+  content (canRetrieveWindowContent).
 
   flagReportViewIds is required for AccessibilityNodeInfo.viewIdResourceName
   (and AccessibilityEvent.source.viewIdResourceName) to ever return a real
@@ -14,7 +16,7 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeViewClicked|typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:packageNames="production.ttrides.driver,product.allridi.driver"
+    android:packageNames="production.ttrides.driver,product.allridi.driver,com.waze"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:notificationTimeout="100"

@@ -81,6 +81,55 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         fun parseSurgeMultiplier(texts: List<String>): Double? =
             texts.firstNotNullOfOrNull { surgeTextPattern.find(it.trim())?.groupValues?.get(1)?.toDoubleOrNull() }
 
+        const val WAZE_PACKAGE = "com.waze"
+        private const val WAZE_WATCH_MS = 30_000L
+        private const val WAZE_MAX_TEXTS = 80
+
+        data class WazeMetrics(val minutes: Double, val distanceKm: Double)
+
+        // Waze's navigation panel reads like "12 min · 5.4 km" (also "1 hr 5 min · 40 km").
+        private val wazeMetricsPattern = Regex(
+            """(?:(\d+)\s*h(?:ours?|rs?)?\s*)?(\d+)\s*min\s*[·•|\-]\s*(\d+(?:\.\d+)?)\s*(km|mi)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+
+        fun parseWazeMetrics(texts: List<String>): WazeMetrics? {
+            // Individual nodes first, then the whole screen joined, in case the time and
+            // distance are separate text nodes.
+            val candidates = texts + texts.joinToString(" · ") + texts.joinToString(" ")
+            for (candidate in candidates) {
+                val match = wazeMetricsPattern.find(candidate) ?: continue
+                val hours = match.groupValues[1].toIntOrNull() ?: 0
+                val minutes = hours * 60.0 + match.groupValues[2].toDouble()
+                val distance = match.groupValues[3].toDouble()
+                val km = if (match.groupValues[4].equals("mi", ignoreCase = true)) distance * 1.609344 else distance
+                return WazeMetrics(minutes, km)
+            }
+            return null
+        }
+
+        // The screen shown once a ride has been accepted and the driver is heading to the
+        // rider (before the trip itself starts). Texts taken from real logs of both apps.
+        fun isPickupPhaseScreen(packageName: String, texts: List<String>): Boolean = when (packageName) {
+            "production.ttrides.driver" ->
+                texts.any { it == "Pickup" } && texts.any { it.equals("CANCEL REQUEST", ignoreCase = true) }
+            "product.allridi.driver" ->
+                texts.any { it == "Drop off at" } &&
+                    texts.any { it == "Arrived" || it == "Start Trip" || it == "Cancel" } &&
+                    texts.none { text -> RIDE_ACTIVE_MARKERS.any { text.contains(it) } }
+            else -> false
+        }
+
+        // Lets the app's UI ask the running accessibility service to flip both apps at once.
+        @Volatile
+        private var instance: RideTriggerAccessibilityService? = null
+
+        // false when the accessibility service isn't running.
+        fun requestSetAllAppsOnline(online: Boolean): Boolean {
+            val service = instance ?: return false
+            Handler(Looper.getMainLooper()).post { service.setAllAppsOnline(online) }
+            return true
+        }
     }
 
     /**
@@ -95,6 +144,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         val pressNavOnReturn: Boolean = false,
         val startedAt: Long = SystemClock.elapsedRealtime(),
         var retryScheduled: Boolean = false,
+        // Master toggles flip both apps on request and don't touch trip bookkeeping.
+        val master: Boolean = false,
+        val onDone: (() -> Unit)? = null,
     )
 
     private var pendingToggle: PendingToggle? = null
@@ -116,10 +168,22 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     private var allridiCloseClicks = 0
     private var postCloseWatchRunning = false
 
+    // The app a ride was accepted on, from the pickup screen until the trip starts or is cancelled.
+    private var acceptedPackage: String? = null
+    private var pickupPackage: String? = null
+
+    // Waze's remaining time/distance at the start of navigation, used as the trip estimate
+    // when no route estimate exists.
+    private var wazeWatchRunning = false
+    private var wazeMetricsApplied = false
+
     private var lastLoggedWindowKey: String? = null
-    
+
     // Flag to wait for payment screen dismissal before restoring the other app online
     private var pendingPaymentDismissalPackage: String? = null
+
+    // Runnable to automatically clear the accept lock if the offer expires before loading pickup UI
+    private var resetAcceptedPackageRunnable: Runnable? = null
 
     private fun logBoth(message: String) {
         Log.d(TAG, message)
@@ -128,11 +192,21 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         logBoth("onServiceConnected")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (instance === this) instance = null
+        return super.onUnbind(intent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
+        if (packageName == WAZE_PACKAGE) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) maybeStartWazeWatch()
+            return
+        }
         if (RATE_CARD_ID_BY_PACKAGE[packageName] == null) return
 
         when (event.eventType) {
@@ -211,6 +285,8 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             stopTripIfNeeded(packageName)
         }
 
+        handlePickupPhase(packageName, texts)
+
         // If waiting for payment dismissal, check if driver has returned to the main map screen
         if (pendingPaymentDismissalPackage == packageName && isBackAtMap(packageName, texts)) {
             logBoth("Main map screen detected after payment on $packageName. Restoring other app online.")
@@ -286,7 +362,40 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         return required.all { marker -> texts.any { it.contains(marker) } }
     }
 
+    /**
+     * Temporarily locks acceptedPackage to prevent double-accept race conditions,
+     * but automatically clears the lock after 5 seconds if a pickup screen fails to render
+     * (e.g., request expired or snagged by another driver).
+     */
+    private fun setAcceptedPackageWithTimeout(packageName: String) {
+        acceptedPackage = packageName
+
+        // Cancel any previous pending timeout
+        resetAcceptedPackageRunnable?.let { Handler(Looper.getMainLooper()).removeCallbacks(it) }
+
+        val runnable = Runnable {
+            if (acceptedPackage == packageName && FareTrackingService.activeSnapshot == null) {
+                logBoth("Accept lock timed out for $packageName (request expired or failed to open pickup screen). Clearing lock.")
+                acceptedPackage = null
+            }
+        }
+        resetAcceptedPackageRunnable = runnable
+        Handler(Looper.getMainLooper()).postDelayed(runnable, 5000)
+    }
+
+    /**
+     * Evaluates incoming request distance against user-configured thresholds and triggers auto-action.
+     * 
+     * - Distance < Near Threshold: Triggers "Accept"
+     * - Distance > Far Threshold: Triggers "Cancel" (TTRS) or "REJECT" (AllRiDi)
+     * 
+     * Also guards against auto-accept race conditions across driver apps by checking if a ride is
+     * already accepted or active before executing a tap.
+     */
     private fun handleIncomingRequest(packageName: String, texts: List<String>) {
+        // Guard 1: Never attempt auto-accept/reject if a ride is already accepted/locked or active
+        if (acceptedPackage != null || FareTrackingService.activeSnapshot != null) return
+
         val distanceKm = detectIncomingRequestDistanceKm(packageName, texts) ?: run {
             lastAlertedRequestKey = null
             return
@@ -296,7 +405,8 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             lastSeenAllridiSurge = parseSurgeMultiplier(texts) ?: 1.0
         }
 
-        val key ="$packageName:$distanceKm"
+        // Avoid duplicate triggers for the same incoming request popup
+        val key = "$packageName:$distanceKm"
         if (key == lastAlertedRequestKey) return
         lastAlertedRequestKey = key
 
@@ -313,26 +423,39 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         val actionBtn = findClickableActionButton(root, actionText)
         root.recycle()
 
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
         if (actionBtn != null) {
             val result = actionBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             actionBtn.recycle()
-            // logBoth("Tapped '$actionText' for $packageName (dist: ${distanceKm}km), result=$result")
+            logBoth("Tapped '$actionText' for $packageName (dist: ${distanceKm}km), result=$result")
+
+            // Guard 2: Set temporary accept lock with 5s timeout fallback
+            if (result && actionText == "Accept") {
+                setAcceptedPackageWithTimeout(packageName)
+            }
         } else {
-            // logBoth("Could not immediately find '$actionText' on $packageName. Scheduling retry...")
-            
+            logBoth("Could not immediately find '$actionText' on $packageName. Scheduling retry...")
+
             Handler(Looper.getMainLooper()).postDelayed({
+                if (acceptedPackage != null) return@postDelayed
                 val retryRoot = rootInActiveWindow ?: return@postDelayed
                 val retryBtn = findClickableActionButton(retryRoot, actionText)
                 retryRoot.recycle()
                 if (retryBtn != null) {
                     val res = retryBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     retryBtn.recycle()
-                    // logBoth("Retry tapped '$actionText' for $packageName, result=$res")
+                    logBoth("Retry tapped '$actionText' for $packageName, result=$res")
+                    
+                    if (res && actionText == "Accept") {
+                        setAcceptedPackageWithTimeout(packageName)
+                    }
                 } else {
-                    // logBoth("Retry failed to find '$actionText' on $packageName")
+                    logBoth("Retry failed to find '$actionText' on $packageName")
                 }
             }, 300)
         }
+////////////////////////////////////////////////////////////////////////////////////////////////////        
     }
 
     private fun detectIncomingRequestDistanceKm(packageName: String, texts: List<String>): Double? =
@@ -385,9 +508,42 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             geocodeAndAttach(dropAddress)
         }
 
+        acceptedPackage = null
+        pickupPackage = null
+        wazeMetricsApplied = false
+
         val otherPkg = otherPackage(packageName)
         if (otherPkg != null) {
-            triggerToggle(target = otherPkg, searchText = "ON", returnTo = packageName, pressNavOnReturn = true)
+            if (offlinedPackage == otherPkg) {
+                // Already taken offline when the ride was accepted; just press the arrow.
+                armNavButton(packageName)
+            } else {
+                triggerToggle(target = otherPkg, searchText = "ON", returnTo = packageName, pressNavOnReturn = true)
+            }
+        }
+    }
+
+    // Takes the other app offline as soon as a ride is accepted (the pickup screen appears),
+    // and brings it back if the ride goes away before the trip starts.
+    private fun handlePickupPhase(packageName: String, texts: List<String>) {
+        if (FareTrackingService.activeSnapshot != null) return
+
+        if (isPickupPhaseScreen(packageName, texts)) {
+            if (pickupPackage == packageName) return
+            val otherPkg = otherPackage(packageName) ?: return
+            pickupPackage = packageName
+            acceptedPackage = packageName
+            logBoth("Ride accepted on $packageName (pickup screen). Taking $otherPkg offline.")
+            triggerToggle(target = otherPkg, searchText = "ON", returnTo = packageName)
+            return
+        }
+
+        if (pickupPackage == packageName && isBackAtMap(packageName, texts)) {
+            pickupPackage = null
+            acceptedPackage = null
+            val toBringOnline = offlinedPackage ?: otherPackage(packageName) ?: return
+            logBoth("Ride on $packageName ended before it started. Restoring $toBringOnline online.")
+            triggerToggle(target = toBringOnline, searchText = "OFF", returnTo = packageName)
         }
     }
 
@@ -409,6 +565,9 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         // Set pending dismissal flag so we wait for driver to close the summary screen
         pendingPaymentDismissalPackage = justEndedPackage
         allridiCloseClicks = 0
+        acceptedPackage = null
+        pickupPackage = null
+        wazeMetricsApplied = false
     }
 
     /**
@@ -423,13 +582,22 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun triggerToggle(target: String, searchText: String, returnTo: String?, pressNavOnReturn: Boolean = false) {
+    private fun triggerToggle(
+        target: String,
+        searchText: String,
+        returnTo: String?,
+        pressNavOnReturn: Boolean = false,
+        master: Boolean = false,
+        onDone: (() -> Unit)? = null,
+    ) {
         logBoth("Foregrounding $target to tap its '$searchText' toggle")
         pendingToggle = PendingToggle(
             targetPackage = target,
             searchText = searchText,
             returnToPackage = returnTo,
             pressNavOnReturn = pressNavOnReturn,
+            master = master,
+            onDone = onDone,
         )
         launchApp(target)
     }
@@ -533,22 +701,57 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
     private fun finishToggle(pending: PendingToggle, packageName: String) {
         pendingToggle = null
-        offlinedPackage = if (pending.searchText == "ON") packageName else null
+        if (!pending.master) {
+            offlinedPackage = if (pending.searchText == "ON") packageName else null
+        }
         returnToOriginalApp(pending)
     }
 
     private fun returnToOriginalApp(pending: PendingToggle) {
+        val onDone = pending.onDone
+        if (onDone != null) {
+            Handler(Looper.getMainLooper()).postDelayed({ onDone() }, 1500)
+            return
+        }
         val returnTo = pending.returnToPackage ?: return
         val pressNavOnReturn = pending.pressNavOnReturn
         Handler(Looper.getMainLooper()).postDelayed({
             launchApp(returnTo)
-            if (pressNavOnReturn) {
-                pendingNavButtonPackage = returnTo
-                navButtonAttempts = 0
-                navButtonStartedAt = SystemClock.elapsedRealtime()
-                navRetryScheduled = false
-            }
+            if (pressNavOnReturn) armNavButton(returnTo)
         }, 1500)
+    }
+
+    private fun armNavButton(packageName: String) {
+        pendingNavButtonPackage = packageName
+        navButtonAttempts = 0
+        navButtonStartedAt = SystemClock.elapsedRealtime()
+        navRetryScheduled = false
+    }
+
+    // Flips both apps to the same state in turn (Allridi, then TTRS), then returns here.
+    private fun setAllAppsOnline(online: Boolean) {
+        if (pendingToggle != null) {
+            logBoth("Master toggle ignored: another toggle is still in progress")
+            return
+        }
+        // The labels show each app's current state: tap "OFF" to go online, "ON" to go offline.
+        val text = if (online) "OFF" else "ON"
+        logBoth("Master toggle: taking both apps ${if (online) "online" else "offline"}")
+        triggerToggle(
+            target = "product.allridi.driver",
+            searchText = text,
+            returnTo = null,
+            master = true,
+            onDone = {
+                triggerToggle(
+                    target = "production.ttrides.driver",
+                    searchText = text,
+                    returnTo = null,
+                    master = true,
+                    onDone = { launchApp(applicationContext.packageName) },
+                )
+            },
+        )
     }
 
     private fun retryOrGiveUp(pending: PendingToggle) {
@@ -693,12 +896,12 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
     // Events from a background app (TTRS fires constantly) arrive while the other app is on
     // screen; reading the active window then would attribute that screen to the wrong app.
-    private fun collectScreenTexts(packageName: String): List<String> {
+    private fun collectScreenTexts(packageName: String, limit: Int = 12): List<String> {
         val root = rootInActiveWindow ?: return emptyList()
         val texts = mutableListOf<String>()
         try {
             if (root.packageName?.toString() != packageName) return emptyList()
-            collectText(root, texts)
+            collectText(root, texts, limit)
         } finally {
             root.recycle()
         }
@@ -752,15 +955,60 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     private fun parseCurrency(text: String): Double? =
         Regex("""[\d,]+(\.\d+)?""").find(text)?.value?.replace(",", "")?.toDoubleOrNull()
 
-    private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>) {
-        if (out.size >= 12) return
+    private fun collectText(node: AccessibilityNodeInfo, out: MutableList<String>, limit: Int = 12) {
+        if (out.size >= limit) return
         val text = node.text?.toString()?.trim()
         if (!text.isNullOrEmpty()) out.add(text)
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            collectText(child, out)
+            collectText(child, out, limit)
             child.recycle()
         }
+    }
+
+    // When Waze comes to the foreground mid-trip and no route estimate exists, read its
+    // remaining time/distance (right after navigation starts that's the whole trip) and hand
+    // it to the fare service. Polls because Waze's panel can fill in after its window opens.
+    private fun maybeStartWazeWatch() {
+        val snapshot = FareTrackingService.activeSnapshot ?: return
+        if (snapshot.estimatedDistanceKm != null || wazeMetricsApplied || wazeWatchRunning) return
+        wazeWatchRunning = true
+        val deadline = SystemClock.elapsedRealtime() + WAZE_WATCH_MS
+        var screensLogged = 0
+        var lastContext: String? = null
+        val handler = Handler(Looper.getMainLooper())
+        val tick = object : Runnable {
+            override fun run() {
+                val estimateExists = FareTrackingService.activeSnapshot?.estimatedDistanceKm != null
+                if (estimateExists || wazeMetricsApplied || SystemClock.elapsedRealtime() > deadline) {
+                    wazeWatchRunning = false
+                    return
+                }
+                val texts = collectScreenTexts(WAZE_PACKAGE, WAZE_MAX_TEXTS)
+                val metrics = parseWazeMetrics(texts)
+                if (metrics != null) {
+                    wazeWatchRunning = false
+                    wazeMetricsApplied = true
+                    logBoth("Waze metrics detected: time=${metrics.minutes} min, dist=${metrics.distanceKm} km")
+                    startService(
+                        Intent(this@RideTriggerAccessibilityService, FareTrackingService::class.java).apply {
+                            action = FareTrackingService.ACTION_UPDATE_WAZE_METRICS
+                            putExtra(FareTrackingService.EXTRA_WAZE_KM, metrics.distanceKm)
+                            putExtra(FareTrackingService.EXTRA_WAZE_MINUTES, metrics.minutes)
+                        },
+                    )
+                    return
+                }
+                val context = describeScreen(texts)
+                if (texts.isNotEmpty() && context != lastContext && screensLogged < 3) {
+                    lastContext = context
+                    screensLogged++
+                    logBoth("waze screen (no metrics yet): $context")
+                }
+                handler.postDelayed(this, 1000)
+            }
+        }
+        handler.postDelayed(tick, 1000)
     }
 
     private fun findDropAddress(packageName: String): String? {
