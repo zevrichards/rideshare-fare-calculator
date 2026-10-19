@@ -425,36 +425,36 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-        if (actionBtn != null) {
-            val result = actionBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            actionBtn.recycle()
-            logBoth("Tapped '$actionText' for $packageName (dist: ${distanceKm}km), result=$result")
+        // if (actionBtn != null) {
+        //     val result = actionBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        //     actionBtn.recycle()
+        //     logBoth("Tapped '$actionText' for $packageName (dist: ${distanceKm}km), result=$result")
 
-            // Guard 2: Set temporary accept lock with 5s timeout fallback
-            if (result && actionText == "Accept") {
-                setAcceptedPackageWithTimeout(packageName)
-            }
-        } else {
-            logBoth("Could not immediately find '$actionText' on $packageName. Scheduling retry...")
+        //     // Guard 2: Set temporary accept lock with 5s timeout fallback
+        //     if (result && actionText == "Accept") {
+        //         setAcceptedPackageWithTimeout(packageName)
+        //     }
+        // } else {
+        //     logBoth("Could not immediately find '$actionText' on $packageName. Scheduling retry...")
 
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (acceptedPackage != null) return@postDelayed
-                val retryRoot = rootInActiveWindow ?: return@postDelayed
-                val retryBtn = findClickableActionButton(retryRoot, actionText)
-                retryRoot.recycle()
-                if (retryBtn != null) {
-                    val res = retryBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    retryBtn.recycle()
-                    logBoth("Retry tapped '$actionText' for $packageName, result=$res")
+        //     Handler(Looper.getMainLooper()).postDelayed({
+        //         if (acceptedPackage != null) return@postDelayed
+        //         val retryRoot = rootInActiveWindow ?: return@postDelayed
+        //         val retryBtn = findClickableActionButton(retryRoot, actionText)
+        //         retryRoot.recycle()
+        //         if (retryBtn != null) {
+        //             val res = retryBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        //             retryBtn.recycle()
+        //             logBoth("Retry tapped '$actionText' for $packageName, result=$res")
                     
-                    if (res && actionText == "Accept") {
-                        setAcceptedPackageWithTimeout(packageName)
-                    }
-                } else {
-                    logBoth("Retry failed to find '$actionText' on $packageName")
-                }
-            }, 300)
-        }
+        //             if (res && actionText == "Accept") {
+        //                 setAcceptedPackageWithTimeout(packageName)
+        //             }
+        //         } else {
+        //             logBoth("Retry failed to find '$actionText' on $packageName")
+        //         }
+        //     }, 300)
+        // }
 ////////////////////////////////////////////////////////////////////////////////////////////////////        
     }
 
