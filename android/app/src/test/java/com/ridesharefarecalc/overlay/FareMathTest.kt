@@ -47,31 +47,53 @@ class FareMathTest {
 
     @Test
     fun `Allridi floors at the minimum fare for zero distance and zero time`() {
-        assertEquals(22.0, FareMath.calculateFare(RateCard.ALLRIDI, 0.0, 0.0), epsilon)
+        assertEquals(26.0, FareMath.calculateFare(RateCard.ALLRIDI, 0.0, 0.0), epsilon)
     }
 
     @Test
-    fun `Allridi charges a flat per-km rate with no long-distance tier`() {
-        // raw = 15 + 30*1.55 + 10*1.1 = 72.5
-        assertEquals(72.5, FareMath.calculateFare(RateCard.ALLRIDI, 30.0, 10.0), epsilon)
+    fun `Allridi charges 3 per km beyond 20km`() {
+        // raw = 15 + 20*1.55 + 10*3 + 10*1.1 = 87
+        assertEquals(87.0, FareMath.calculateFare(RateCard.ALLRIDI, 30.0, 10.0), epsilon)
     }
 
     @Test
     fun `Allridi applies the surge multiplier to the whole calculated fare`() {
-        // raw = (15 + 30*1.55 + 10*1.1) * 1.2 = 72.5 * 1.2 = 87
-        assertEquals(87.0, FareMath.calculateFare(RateCard.ALLRIDI, 30.0, 10.0, 1.2), epsilon)
+        // raw = (15 + 20*1.55 + 10*3 + 10*1.1) * 1.2 = 87 * 1.2 = 104.4
+        assertEquals(104.4, FareMath.calculateFare(RateCard.ALLRIDI, 30.0, 10.0, 1.2), epsilon)
     }
 
     @Test
     fun `Allridi still applies the minimum fare floor when the surged fare is below it`() {
-        // raw = 15 * 1.05 = 15.75, below the $22 minimum
-        assertEquals(22.0, FareMath.calculateFare(RateCard.ALLRIDI, 0.0, 0.0, 1.05), epsilon)
+        // raw = 15 * 1.05 = 15.75, below the $26 minimum
+        assertEquals(26.0, FareMath.calculateFare(RateCard.ALLRIDI, 0.0, 0.0, 1.05), epsilon)
     }
 
     @Test
     fun `Allridi does not floor a surged fare that already exceeds the minimum`() {
-        // raw = (15 + 1*1.55) * 1.5 = 24.825, above the $22 minimum
-        assertEquals(24.825, FareMath.calculateFare(RateCard.ALLRIDI, 1.0, 0.0, 1.5), epsilon)
+        // raw = (15 + 3*1.55) * 1.5 = 29.475, above the $26 minimum
+        assertEquals(29.475, FareMath.calculateFare(RateCard.ALLRIDI, 3.0, 0.0, 1.5), epsilon)
+    }
+
+    @Test
+    fun `a saved Allridi card from before the tier and 26 minimum is corrected`() {
+        val old = RateCard.ALLRIDI.copy(
+            longDistanceKmThreshold = null,
+            perKmRateBeyondThreshold = null,
+            minimumFare = 22.0,
+            baseFare = 17.0,
+        )
+        val corrected = RateCard.withCorrections(old)
+        assertEquals(20.0, corrected.longDistanceKmThreshold!!, epsilon)
+        assertEquals(3.0, corrected.perKmRateBeyondThreshold!!, epsilon)
+        assertEquals(26.0, corrected.minimumFare, epsilon)
+        assertEquals(17.0, corrected.baseFare, epsilon)
+    }
+
+    @Test
+    fun `corrections leave TTRS and a custom Allridi minimum alone`() {
+        assertEquals(RateCard.TTRS, RateCard.withCorrections(RateCard.TTRS))
+        val custom = RateCard.ALLRIDI.copy(minimumFare = 30.0)
+        assertEquals(30.0, RateCard.withCorrections(custom).minimumFare, epsilon)
     }
 
     @Test

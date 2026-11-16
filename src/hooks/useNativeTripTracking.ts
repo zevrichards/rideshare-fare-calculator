@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {GeoPoint} from '../lib/fare';
 import {
   getActiveTrip,
@@ -24,22 +24,29 @@ export function useNativeTripTracking(): TripTracking {
   const [adoptedSurgeMultiplier, setAdoptedSurgeMultiplier] = useState<number | null>(null);
   const [adoptedEstimatedDistanceKm, setAdoptedEstimatedDistanceKm] = useState<number | null>(null);
   const [adoptedEstimatedMinutes, setAdoptedEstimatedMinutes] = useState<number | null>(null);
+  // True for a trip this screen adopted rather than started itself -- only those take
+  // estimate updates from native (e.g. Waze refreshing it mid-trip).
+  const isAdoptedTripRef = useRef(false);
 
   // Every tick (whether the trip was adopted or started fresh from this
-  // screen) updates the live numbers. The "adopted" fields are deliberately
-  // NOT touched here -- only by adoptSnapshot below, from the one-time
-  // mount check -- otherwise a trip started via start() (which already has
-  // a real, JS-computed FareBreakdown from handleStart) would have its
-  // estimate silently overwritten by native's plain-number version on the
-  // very next tick.
+  // screen) updates the live numbers. The "adopted" estimate fields are
+  // only refreshed for an adopted trip (see isAdoptedTripRef) -- a trip
+  // started via start() already has a real, JS-computed FareBreakdown from
+  // handleStart, which native's plain-number version would silently
+  // overwrite on the very next tick.
   const applyLiveNumbers = useCallback((snapshot: TripSnapshot) => {
     setIsTracking(true);
     setDistanceKm(snapshot.distanceKm);
     setElapsedMinutes(snapshot.elapsedMinutes);
+    if (isAdoptedTripRef.current) {
+      setAdoptedEstimatedDistanceKm(snapshot.estimatedDistanceKm);
+      setAdoptedEstimatedMinutes(snapshot.estimatedMinutes);
+    }
   }, []);
 
   const adoptSnapshot = useCallback(
     (snapshot: TripSnapshot) => {
+      isAdoptedTripRef.current = true;
       applyLiveNumbers(snapshot);
       setAdoptedRateCardId(snapshot.rateCardId);
       setAdoptedSurgeMultiplier(snapshot.surgeMultiplier);
@@ -50,6 +57,7 @@ export function useNativeTripTracking(): TripTracking {
   );
 
   const markStopped = useCallback(() => {
+    isAdoptedTripRef.current = false;
     setIsTracking(false);
     setAdoptedRateCardId(null);
     setAdoptedSurgeMultiplier(null);
@@ -83,6 +91,7 @@ export function useNativeTripTracking(): TripTracking {
     }
     await requestNotificationPermission();
     await startOverlayTrip(destination?.latitude ?? null, destination?.longitude ?? null);
+    isAdoptedTripRef.current = false;
     setIsTracking(true);
     setDistanceKm(0);
     setElapsedMinutes(0);

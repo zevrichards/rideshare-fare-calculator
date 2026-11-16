@@ -23,6 +23,7 @@ interface FareOverlayNativeModule {
   setRateCard(cardJson: string): void;
   setSurgeMultiplier(value: number): void;
   setOverlayScale(value: number): void;
+  setUseWazeEstimate(value: boolean): void;
   setFarRequestThresholdKm(value: number): void;
   setNearRequestThresholdKm(value: number): void;
   addListener(eventName: string): void;
@@ -192,6 +193,10 @@ export function mirrorSurgeMultiplier(value: number): void {
 
 export function mirrorOverlayScale(value: number): void {
   nativeModule?.setOverlayScale(value);
+}
+
+export function mirrorUseWazeEstimate(value: boolean): void {
+  nativeModule?.setUseWazeEstimate(value);
 }
 
 export function mirrorFarRequestThresholdKm(value: number): void {

@@ -61,6 +61,11 @@ class FareOverlayModule(reactContext: ReactApplicationContext) :
     override fun getConstants(): MutableMap<String, Any> =
         mutableMapOf("appVersion" to BuildConfig.VERSION_NAME)
 
+    @ReactMethod
+    fun setUseWazeEstimate(value: Boolean) {
+        RateCardPreference.setUseWazeEstimate(reactApplicationContext, value)
+    }
+
     // Resolves false when the accessibility service isn't running.
     @ReactMethod
     fun setAllAppsOnline(online: Boolean, promise: Promise) {

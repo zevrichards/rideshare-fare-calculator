@@ -33,11 +33,28 @@ export const ALLRIDI_RATE_CARD: RateCard = {
   longDistanceKmThreshold: 20,
   perKmRateBeyondThreshold: 3,
   perMinuteRate: 1.1,
-  minimumFare: 22,
+  minimumFare: 26,
   supportsSurge: true,
 };
 
 export const DEFAULT_RATE_CARDS: RateCard[] = [TTRS_RATE_CARD, ALLRIDI_RATE_CARD];
+
+// A saved copy of Allridi's card replaces the defaults wholesale, so one saved before
+// the card was corrected (flat per-km, $22 minimum) would keep the old numbers forever.
+// Patches only those two corrections and leaves any other edits alone.
+export function applyCardCorrections(card: RateCard): RateCard {
+  if (card.id !== ALLRIDI_RATE_CARD.id) {
+    return card;
+  }
+  return {
+    ...card,
+    longDistanceKmThreshold:
+      card.longDistanceKmThreshold ?? ALLRIDI_RATE_CARD.longDistanceKmThreshold,
+    perKmRateBeyondThreshold:
+      card.perKmRateBeyondThreshold ?? ALLRIDI_RATE_CARD.perKmRateBeyondThreshold,
+    minimumFare: card.minimumFare === 22 ? ALLRIDI_RATE_CARD.minimumFare : card.minimumFare,
+  };
+}
 
 const RATE_CARDS_STORAGE_KEY = '@rideshare_fare_calc/rate_cards';
 const SELECTED_RATE_CARD_STORAGE_KEY = '@rideshare_fare_calc/selected_rate_card_id';
@@ -53,9 +70,10 @@ export async function getRateCards(): Promise<RateCard[]> {
     // Overlay saved edits onto the known default cards by id -- keeps
     // ordering/shape stable even if a default card was never edited, and
     // ignores anything in storage that no longer matches a known card.
-    return DEFAULT_RATE_CARDS.map(
-      defaultCard => saved.find(card => card.id === defaultCard.id) ?? defaultCard,
-    );
+    return DEFAULT_RATE_CARDS.map(defaultCard => {
+      const savedCard = saved.find(card => card.id === defaultCard.id);
+      return savedCard ? applyCardCorrections(savedCard) : defaultCard;
+    });
   } catch {
     return DEFAULT_RATE_CARDS;
   }

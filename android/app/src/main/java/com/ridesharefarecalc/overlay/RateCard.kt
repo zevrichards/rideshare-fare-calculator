@@ -5,7 +5,7 @@ import org.json.JSONObject
 /**
  * Mirrors src/lib/rateCards.ts's RateCard shape. longDistanceKmThreshold/
  * perKmRateBeyondThreshold are null together when a card has no tiered
- * long-distance rate (flat perKmRate for the whole trip -- e.g. Allridi).
+ * long-distance rate (flat perKmRate for the whole trip).
  */
 data class RateCard(
     val id: String,
@@ -48,14 +48,26 @@ data class RateCard(
             name = "Allridi",
             baseFare = 15.0,
             perKmRate = 1.55,
-            longDistanceKmThreshold = null,
-            perKmRateBeyondThreshold = null,
+            longDistanceKmThreshold = 20.0,
+            perKmRateBeyondThreshold = 3.0,
             perMinuteRate = 1.1,
-            minimumFare = 22.0,
+            minimumFare = 26.0,
             supportsSurge = true,
         )
 
         val DEFAULTS = listOf(TTRS, ALLRIDI)
+
+        // A saved copy of Allridi's card replaces the defaults wholesale, so one saved before
+        // the card was corrected (flat per-km, $22 minimum) would keep the old numbers
+        // forever. Patches only those two corrections and leaves any other edits alone.
+        fun withCorrections(card: RateCard): RateCard {
+            if (card.id != ALLRIDI.id) return card
+            return card.copy(
+                longDistanceKmThreshold = card.longDistanceKmThreshold ?: ALLRIDI.longDistanceKmThreshold,
+                perKmRateBeyondThreshold = card.perKmRateBeyondThreshold ?: ALLRIDI.perKmRateBeyondThreshold,
+                minimumFare = if (card.minimumFare == 22.0) ALLRIDI.minimumFare else card.minimumFare,
+            )
+        }
 
         fun fromJson(json: JSONObject): RateCard = RateCard(
             id = json.getString("id"),

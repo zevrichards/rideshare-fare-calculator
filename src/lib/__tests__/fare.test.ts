@@ -14,7 +14,7 @@ describe('calculateFare with TTRS (tiered, minimum $28, no surge)', () => {
     expect(calculateFare(TTRS_RATE_CARD, 0, 0)).toBe(28);
   });
 
-  it('charges the standard per-km rate below the 20km threshold, floored at the minimum', () => {
+  it('charges the standard per-km rate below the 20km threshold', () => {
     // raw = 16 + 10*1.75 + 15*1.1 = 50, above the $28 minimum
     expect(calculateFare(TTRS_RATE_CARD, 10, 15)).toBeCloseTo(50, 5);
   });
@@ -39,13 +39,13 @@ describe('calculateFare with TTRS (tiered, minimum $28, no surge)', () => {
   });
 });
 
-describe('calculateFare with Allridi (tiered beyond 20km, minimum $22, supports surge)', () => {
+describe('calculateFare with Allridi (tiered beyond 20km, minimum $26, supports surge)', () => {
   it('floors at the minimum fare for zero distance and zero time', () => {
-    expect(calculateFare(ALLRIDI_RATE_CARD, 0, 0)).toBe(22);
+    expect(calculateFare(ALLRIDI_RATE_CARD, 0, 0)).toBe(26);
   });
 
   it('charges the standard per-km rate below the 20km threshold, floored at the minimum', () => {
-    // raw = 15 + 10*1.55 + 15*1.1 = 47, above the $22 minimum
+    // raw = 15 + 10*1.55 + 15*1.1 = 47, above the $26 minimum
     expect(calculateFare(ALLRIDI_RATE_CARD, 10, 15)).toBeCloseTo(47, 5);
   });
 
@@ -59,19 +59,24 @@ describe('calculateFare with Allridi (tiered beyond 20km, minimum $22, supports 
     expect(calculateFare(ALLRIDI_RATE_CARD, 30, 10)).toBeCloseTo(87, 5);
   });
 
+  it('floors a short trip at the $26 minimum even though its raw fare is lower', () => {
+    // raw = 15 + 2*1.55 + 3*1.1 = 21.4
+    expect(calculateFare(ALLRIDI_RATE_CARD, 2, 3)).toBe(26);
+  });
+
   it('applies the surge multiplier to the whole calculated fare, including the beyond-threshold tier', () => {
     // raw = (15 + 20*1.55 + 10*3 + 10*1.1) * 1.2 = 87 * 1.2 = 104.4
     expect(calculateFare(ALLRIDI_RATE_CARD, 30, 10, 1.2)).toBeCloseTo(104.4, 5);
   });
 
   it('does not floor a surged fare that already exceeds the minimum', () => {
-    // raw = (15 + 1*1.55) * 1.5 = 24.825, above the $22 minimum
-    expect(calculateFare(ALLRIDI_RATE_CARD, 1, 0, 1.5)).toBeCloseTo(24.825, 5);
+    // raw = (15 + 3*1.55) * 1.5 = 29.475, above the $26 minimum
+    expect(calculateFare(ALLRIDI_RATE_CARD, 3, 0, 1.5)).toBeCloseTo(29.475, 5);
   });
 
   it('still applies the minimum fare floor when the surged fare is below it', () => {
-    // raw = 15 * 1.05 = 15.75, below the $22 minimum
-    expect(calculateFare(ALLRIDI_RATE_CARD, 0, 0, 1.05)).toBe(22);
+    // raw = 15 * 1.05 = 15.75, below the $26 minimum
+    expect(calculateFare(ALLRIDI_RATE_CARD, 0, 0, 1.05)).toBe(26);
   });
 });
 

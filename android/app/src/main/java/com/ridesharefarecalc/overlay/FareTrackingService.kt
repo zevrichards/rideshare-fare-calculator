@@ -57,6 +57,8 @@ class FareTrackingService : Service() {
         const val ACTION_UPDATE_WAZE_METRICS = "com.ridesharefarecalc.overlay.action.UPDATE_WAZE_METRICS"
         const val EXTRA_WAZE_KM = "wazeKm"
         const val EXTRA_WAZE_MINUTES = "wazeMinutes"
+        // Replace an existing estimate too (the "use Waze for the estimate" setting).
+        const val EXTRA_WAZE_OVERRIDE = "wazeOverride"
 
         private const val CHANNEL_ID = "fare_tracking"
         private const val NOTIFICATION_ID = 4201
@@ -125,11 +127,17 @@ class FareTrackingService : Service() {
         return START_NOT_STICKY
     }
 
+    // Waze shows what's left of the route, so the whole-trip estimate is what's been driven
+    // so far plus that remainder (at the start of a trip the two are the same thing).
+    // Without EXTRA_WAZE_OVERRIDE it only fills in a missing estimate.
     private fun applyWazeMetrics(intent: Intent?) {
-        if (!isTracking || estimatedDistanceKm != null) return
-        val km = intent?.getDoubleExtra(EXTRA_WAZE_KM, Double.NaN)?.takeIf { !it.isNaN() } ?: return
-        val minutes = intent.getDoubleExtra(EXTRA_WAZE_MINUTES, Double.NaN).takeIf { !it.isNaN() } ?: return
-        applyEstimate(km, minutes)
+        if (!isTracking) return
+        val override = intent?.getBooleanExtra(EXTRA_WAZE_OVERRIDE, false) ?: false
+        if (!override && estimatedDistanceKm != null) return
+        val remainingKm = intent?.getDoubleExtra(EXTRA_WAZE_KM, Double.NaN)?.takeIf { !it.isNaN() } ?: return
+        val remainingMinutes = intent.getDoubleExtra(EXTRA_WAZE_MINUTES, Double.NaN).takeIf { !it.isNaN() } ?: return
+        val elapsedMinutes = (System.currentTimeMillis() - startTimeMs) / 60000.0
+        applyEstimate(distanceKm + remainingKm, elapsedMinutes + remainingMinutes)
         updateOverlay()
     }
 

@@ -84,25 +84,35 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         const val WAZE_PACKAGE = "com.waze"
         private const val WAZE_WATCH_MS = 30_000L
         private const val WAZE_MAX_TEXTS = 80
+        private const val WAZE_ESTIMATE_INTERVAL_MS = 60_000L
+        private const val WAZE_LOOP_TICK_MS = 5_000L
+        private const val WAZE_LOOP_GRACE_MS = 15_000L
 
         data class WazeMetrics(val minutes: Double, val distanceKm: Double)
 
-        // Waze's navigation panel reads like "12 min · 5.4 km" (also "1 hr 5 min · 40 km").
+        // Waze's navigation panel shows the time left and the distance left as neighbouring
+        // texts: "13 min", "57 min" for short routes, "1:12 h" for long ones (e.g.
+        // "7:29 PM | 1:12 h | 31 km | Via ..."), followed by "5.5 km".
         private val wazeMetricsPattern = Regex(
-            """(?:(\d+)\s*h(?:ours?|rs?)?\s*)?(\d+)\s*min\s*[·•|\-]\s*(\d+(?:\.\d+)?)\s*(km|mi)\b""",
+            """(?:(\d+):(\d{2})\s*h(?:ours?|rs?)?|(?:(\d+)\s*h(?:ours?|rs?)?\s*)?(\d+)\s*min)""" +
+                """\s*[·•|\-]?\s*(\d+(?:\.\d+)?)\s*(km|mi)\b""",
             RegexOption.IGNORE_CASE,
         )
 
         fun parseWazeMetrics(texts: List<String>): WazeMetrics? {
-            // Individual nodes first, then the whole screen joined, in case the time and
-            // distance are separate text nodes.
+            // Individual nodes first, then the whole screen joined, since the time and the
+            // distance are normally separate text nodes.
             val candidates = texts + texts.joinToString(" · ") + texts.joinToString(" ")
             for (candidate in candidates) {
                 val match = wazeMetricsPattern.find(candidate) ?: continue
-                val hours = match.groupValues[1].toIntOrNull() ?: 0
-                val minutes = hours * 60.0 + match.groupValues[2].toDouble()
-                val distance = match.groupValues[3].toDouble()
-                val km = if (match.groupValues[4].equals("mi", ignoreCase = true)) distance * 1.609344 else distance
+                val groups = match.groupValues
+                val minutes = if (groups[2].isNotEmpty()) {
+                    groups[1].toInt() * 60.0 + groups[2].toInt()
+                } else {
+                    (groups[3].toIntOrNull() ?: 0) * 60.0 + groups[4].toInt()
+                }
+                val distance = groups[5].toDouble()
+                val km = if (groups[6].equals("mi", ignoreCase = true)) distance * 1.609344 else distance
                 return WazeMetrics(minutes, km)
             }
             return null
@@ -119,6 +129,35 @@ class RideTriggerAccessibilityService : AccessibilityService() {
                     texts.none { text -> RIDE_ACTIVE_MARKERS.any { text.contains(it) } }
             else -> false
         }
+
+        private val rideFarePattern = Regex("""^TT\$\s*(\d+(?:\.\d+)?)$""")
+        private val rideIdPattern = Regex("""\(ID::\s*#?(\d+)\)""")
+
+        // What the rider paid, from each app's end-of-ride screen (before commission).
+        // TTRS: "... | 10 min | TT$39 | Please rate your experience ..."
+        // Allridi: "Trip fare | TT$77 | Promotion | -TT$0 | Extra fee | Trip fare | TT$77"
+        // (the last "Trip fare" is the final one).
+        fun parseRideFare(packageName: String, texts: List<String>): Double? = when (packageName) {
+            "production.ttrides.driver" ->
+                texts.firstNotNullOfOrNull { rideFarePattern.find(it.trim())?.groupValues?.get(1)?.toDoubleOrNull() }
+            "product.allridi.driver" -> {
+                val labelIndex = texts.indexOfLast { it == "Trip fare" }
+                if (labelIndex < 0) {
+                    null
+                } else {
+                    texts.getOrNull(labelIndex + 1)
+                        ?.let { rideFarePattern.find(it.trim()) }
+                        ?.groupValues?.get(1)?.toDoubleOrNull()
+                }
+            }
+            else -> null
+        }
+
+        // TTRS shows a unique ride id on its end-of-ride screen, which makes de-duping exact.
+        fun parseRideId(texts: List<String>): String? =
+            texts.firstNotNullOfOrNull { rideIdPattern.find(it)?.groupValues?.get(1) }
+
+        private const val RIDE_FARE_DEDUPE_MS = 3 * 60_000L
 
         // Lets the app's UI ask the running accessibility service to flip both apps at once.
         @Volatile
@@ -176,6 +215,8 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     // when no route estimate exists.
     private var wazeWatchRunning = false
     private var wazeMetricsApplied = false
+    private var wazeEstimateLoopRunning = false
+    private var wazeLastEstimateAt = 0L
 
     private var lastLoggedWindowKey: String? = null
 
@@ -204,7 +245,12 @@ class RideTriggerAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
         if (packageName == WAZE_PACKAGE) {
-            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) maybeStartWazeWatch()
+            // With the Waze-estimate setting on, the periodic loop already reads Waze.
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                !RateCardPreference.getUseWazeEstimate(this)
+            ) {
+                maybeStartWazeWatch()
+            }
             return
         }
         if (RATE_CARD_ID_BY_PACKAGE[packageName] == null) return
@@ -282,6 +328,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         if (isRideEndedScreen(packageName, texts)) {
             logBoth("Ride-ended screen detected, package=$packageName")
+            recordRideFare(packageName, texts)
             stopTripIfNeeded(packageName)
         }
 
@@ -311,6 +358,49 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         }
 
         handleIncomingRequest(packageName, texts)
+    }
+
+    private var lastRecordedRideKey: String? = null
+    private var lastRecordedRideAt = 0L
+
+    // Adds the finished ride's fare (after commission) to today's earnings for that app, once.
+    // The apps' own Earnings screens correct it whenever the driver opens them.
+    private fun recordRideFare(packageName: String, texts: List<String>) {
+        var fare = parseRideFare(packageName, texts) ?: return
+
+        // The unique ride id (TTRS) makes de-duping exact; otherwise the fare within a few minutes.
+        val rideId = parseRideId(texts)
+        val key = if (rideId != null) "$packageName|$rideId" else "$packageName|$fare"
+        val now = SystemClock.elapsedRealtime()
+        if (key == lastRecordedRideKey && (rideId != null || now - lastRecordedRideAt < RIDE_FARE_DEDUPE_MS)) return
+
+        // The trip's own figure from our tracking, if it was running.
+        val snapshot = FareTrackingService.activeSnapshot
+        val ours = snapshot?.let {
+            val card = RateCardPreference.getRateCard(this, it.rateCardId)
+            FareMath.calculateFare(card, it.distanceKm, it.elapsedMinutes, it.surgeMultiplier)
+        }
+
+        if (fare <= 0.0) {
+            // TTRS shows TT$0 on its ride-complete screen for card rides (nothing is collected in
+            // cash) and no other fare, so use our own computed figure for the ride. The driver's
+            // Earnings screen corrects the day's total whenever it's opened.
+            if (packageName != "production.ttrides.driver" || ours == null) return
+            logBoth("Ride-complete screen shows TT$0 (card ride); using the app's own fare of ${"%.2f".format(Locale.US, ours)}")
+            fare = ours
+        } else if (snapshot != null && ours != null) {
+            // How close our own running figure was, so long-ride accuracy can be checked from the log.
+            logBoth(
+                "Fare check $packageName: app=${"%.2f".format(Locale.US, ours)} actual=${"%.2f".format(Locale.US, fare)} " +
+                    "(km=${"%.2f".format(Locale.US, snapshot.distanceKm)}, " +
+                    "min=${"%.1f".format(Locale.US, snapshot.elapsedMinutes)}, surge=x${snapshot.surgeMultiplier})",
+            )
+        }
+
+        lastRecordedRideKey = key
+        lastRecordedRideAt = now
+        val total = DailyEarnings.addRide(this, packageName, fare)
+        logBoth("Ride fare ${"%.2f".format(Locale.US, fare)} added to $packageName's day total (after commission): ${"%.2f".format(Locale.US, total)}")
     }
 
     // Allridi's online home screen shows just "ON" (offline: "OFF"), none of the markers.
@@ -504,7 +594,12 @@ class RideTriggerAccessibilityService : AccessibilityService() {
 
         ContextCompat.startForegroundService(this, Intent(this, FareTrackingService::class.java))
 
-        if (!dropAddress.isNullOrBlank()) {
+        val useWazeEstimate = RateCardPreference.getUseWazeEstimate(this)
+        if (useWazeEstimate) {
+            logBoth("Using Waze for the trip estimate (skipping the Places/Routes lookup)")
+            wazeLastEstimateAt = 0L
+            startWazeEstimateLoop()
+        } else if (!dropAddress.isNullOrBlank()) {
             geocodeAndAttach(dropAddress)
         }
 
@@ -633,24 +728,6 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             return
         }
 
-        // When TTRS is offline its home screen has a big GO ONLINE button -- simpler and
-        // more reliable than the drawer toggle, so try it first.
-        if (packageName == "production.ttrides.driver") {
-            val goOnlineBtn = findClickableActionButton(root, "GO ONLINE")
-            if (goOnlineBtn != null) {
-                if (pending.searchText == "OFF") {
-                    val result = goOnlineBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    logBoth("toggle: tapped 'GO ONLINE' for $packageName (attempt ${pending.attempts}), result=$result")
-                } else {
-                    logBoth("toggle: $packageName already offline (GO ONLINE showing), nothing to tap (attempt ${pending.attempts})")
-                }
-                goOnlineBtn.recycle()
-                root.recycle()
-                finishToggle(pending, packageName)
-                return
-            }
-        }
-
         // Look for the toggle on the current screen before touching the menu button: TTRS's
         // drawer is often still open from last time, and tapping the menu button then would
         // close it instead of opening it.
@@ -659,6 +736,33 @@ class RideTriggerAccessibilityService : AccessibilityService() {
         // where we want it (e.g. the driver took it offline by hand first).
         val oppositeText = if (pending.searchText == "ON") "OFF" else "ON"
         val alreadyThereNode = if (toggleNode == null) findToggleNode(root, oppositeText, packageName) else null
+
+        // TTRS's home screen has a big GO ONLINE button while it's offline. The button can still
+        // be in the tree behind an open drawer, where clicking it fails (result=false) -- that
+        // once left TTRS offline while the app believed it was done. So it's only used when the
+        // drawer toggle isn't on screen, and only counts if the click actually lands.
+        if (toggleNode == null && alreadyThereNode == null && packageName == "production.ttrides.driver") {
+            val goOnlineBtn = findClickableActionButton(root, "GO ONLINE")
+            if (goOnlineBtn != null) {
+                if (pending.searchText == "OFF") {
+                    val result = goOnlineBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    logBoth("toggle: tapped 'GO ONLINE' for $packageName (attempt ${pending.attempts}), result=$result")
+                    goOnlineBtn.recycle()
+                    if (result) {
+                        root.recycle()
+                        finishToggle(pending, packageName)
+                        return
+                    }
+                    logBoth("toggle: GO ONLINE click didn't land, falling back to the drawer toggle")
+                } else {
+                    goOnlineBtn.recycle()
+                    logBoth("toggle: $packageName already offline (GO ONLINE showing), nothing to tap (attempt ${pending.attempts})")
+                    root.recycle()
+                    finishToggle(pending, packageName)
+                    return
+                }
+            }
+        }
 
         // Handle opening TTRS side navigation drawer
         if (toggleNode == null && alreadyThereNode == null &&
@@ -1010,15 +1114,7 @@ class RideTriggerAccessibilityService : AccessibilityService() {
                         "Waze metrics detected: time=${metrics.minutes} min, dist=${metrics.distanceKm} km " +
                             if (hasEstimate) "(trip already has an estimate, not applying)" else "(applying as the estimate)",
                     )
-                    if (!hasEstimate) {
-                        startService(
-                            Intent(this@RideTriggerAccessibilityService, FareTrackingService::class.java).apply {
-                                action = FareTrackingService.ACTION_UPDATE_WAZE_METRICS
-                                putExtra(FareTrackingService.EXTRA_WAZE_KM, metrics.distanceKm)
-                                putExtra(FareTrackingService.EXTRA_WAZE_MINUTES, metrics.minutes)
-                            },
-                        )
-                    }
+                    if (!hasEstimate) sendWazeMetrics(metrics, override = false)
                     return
                 }
                 val context = describeScreen(texts)
@@ -1031,6 +1127,49 @@ class RideTriggerAccessibilityService : AccessibilityService() {
             }
         }
         handler.postDelayed(tick, 1000)
+    }
+
+    private fun sendWazeMetrics(metrics: WazeMetrics, override: Boolean) {
+        startService(
+            Intent(this, FareTrackingService::class.java).apply {
+                action = FareTrackingService.ACTION_UPDATE_WAZE_METRICS
+                putExtra(FareTrackingService.EXTRA_WAZE_KM, metrics.distanceKm)
+                putExtra(FareTrackingService.EXTRA_WAZE_MINUTES, metrics.minutes)
+                putExtra(FareTrackingService.EXTRA_WAZE_OVERRIDE, override)
+            },
+        )
+    }
+
+    // "Use Waze for the estimate": for the whole trip, whenever Waze is the screen showing,
+    // read its remaining time/distance and refresh the estimate -- straight away at first,
+    // then at most once a minute. (Reading is only possible while Waze is on screen.)
+    private fun startWazeEstimateLoop() {
+        if (wazeEstimateLoopRunning) return
+        wazeEstimateLoopRunning = true
+        val startedAt = SystemClock.elapsedRealtime()
+        val handler = Handler(Looper.getMainLooper())
+        val tick = object : Runnable {
+            override fun run() {
+                val now = SystemClock.elapsedRealtime()
+                // The trip's snapshot appears a moment after the service starts, so don't
+                // treat "no trip yet" as "trip over" right away.
+                val tripOver = FareTrackingService.activeSnapshot == null && now - startedAt > WAZE_LOOP_GRACE_MS
+                if (tripOver || !RateCardPreference.getUseWazeEstimate(this@RideTriggerAccessibilityService)) {
+                    wazeEstimateLoopRunning = false
+                    return
+                }
+                if (wazeLastEstimateAt == 0L || now - wazeLastEstimateAt >= WAZE_ESTIMATE_INTERVAL_MS) {
+                    val metrics = parseWazeMetrics(collectScreenTexts(WAZE_PACKAGE, WAZE_MAX_TEXTS))
+                    if (metrics != null) {
+                        wazeLastEstimateAt = now
+                        logBoth("Waze estimate updated: remaining ${metrics.minutes} min, ${metrics.distanceKm} km")
+                        sendWazeMetrics(metrics, override = true)
+                    }
+                }
+                handler.postDelayed(this, WAZE_LOOP_TICK_MS)
+            }
+        }
+        handler.postDelayed(tick, WAZE_LOOP_TICK_MS)
     }
 
     private fun findDropAddress(packageName: String): String? {

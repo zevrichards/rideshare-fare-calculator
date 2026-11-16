@@ -77,6 +77,32 @@ class ScreenDetectionTest {
     }
 
     @Test
+    fun `parses the real long-route Waze screens (H-MM h then km)`() {
+        val start = parseWazeMetrics(
+            listOf(
+                "Arrived at", "Unnamed road", "7:29 PM", "1:12 h", "31 km", "Via Beetham Hwy E",
+                "Add a stop", "Find the best time to leave", "Show more", "80 m", "Lutchman Dr",
+            ),
+        )!!
+        assertEquals(72.0, start.minutes, 1e-9)
+        assertEquals(31.0, start.distanceKm, 1e-9)
+
+        val recenter = parseWazeMetrics(listOf("80 m", "Lutchman Dr", "Re-center", "1:12 h", "31 km", "Overview"))!!
+        assertEquals(72.0, recenter.minutes, 1e-9)
+
+        val driving = parseWazeMetrics(
+            listOf("Carlos St", "10", "km/h", "7:28 PM", "1:01 h", "27 km", "Via Beetham Hwy E", "290 m", "Wrightson Rd E"),
+        )!!
+        assertEquals(61.0, driving.minutes, 1e-9)
+        assertEquals(27.0, driving.distanceKm, 1e-9)
+    }
+
+    @Test
+    fun `the arrival clock time is not mistaken for a duration`() {
+        assertNull(parseWazeMetrics(listOf("Carlos St", "7:28 PM", "290 m", "Wrightson Rd E")))
+    }
+
+    @Test
     fun `no Waze metrics when the screen has none`() {
         assertNull(parseWazeMetrics(listOf("Search Waze", "Home", "Work")))
     }

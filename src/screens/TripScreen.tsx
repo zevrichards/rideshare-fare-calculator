@@ -1,41 +1,40 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {AppState, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {AppState, BackHandler, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import {calculateFareBreakdown, FareBreakdown, GeoPoint} from '../lib/fare';
 import {estimateFareWithRouting} from '../lib/routing';
 import {
   getRateCards,
+  getSelectedRateCardId,
+  getSurgeMultiplier,
   RateCard,
   setSelectedRateCardId,
   TTRS_RATE_CARD,
 } from '../lib/rateCards';
 import {useTripTracking} from '../hooks/useTripTracking';
 import {useNativeTripTracking} from '../hooks/useNativeTripTracking';
-import RateCardSection from './RateCardSection';
+import SettingsScreen from './SettingsScreen';
 import DestinationSearch from './DestinationSearch';
 import MapPickerScreen from './MapPickerScreen';
-import OverlaySizeSection from './OverlaySizeSection';
 import RequestAlertThresholdsSection from './RequestAlertThresholdsSection';
 import {
   APP_VERSION,
-  clearDiagnosticLog,
-  copyToClipboard,
   DailyEarnings,
   getDailyEarnings,
-  getDiagnosticLog,
   getPreferredNavApp,
   hasAccessibilityServiceEnabled,
   hasOverlayPermission,
   isOverlaySupported,
   mirrorSelectedRateCard,
+  mirrorUseWazeEstimate,
   NAV_APPS,
   NavAppPackage,
-  openDefaultAppSettings,
   requestAccessibilityServiceEnable,
   requestOverlayPermission,
   setAllAppsOnline,
   setPreferredNavApp,
 } from '../native/FareOverlay';
+import {getUseWazeEstimate} from '../lib/wazeEstimateSetting';
 import {ThemeColors, useThemeColors} from '../theme/colors';
 
 const FARE_DISCLAIMER =
@@ -102,10 +101,10 @@ export default function TripScreen() {
   const [overlayPermitted, setOverlayPermitted] = useState(false);
   const [accessibilityServiceEnabled, setAccessibilityServiceEnabled] =
     useState(false);
-  const [showDiagnosticLog, setShowDiagnosticLog] = useState(false);
-  const [diagnosticLogText, setDiagnosticLogText] = useState('');
-  const [logCopied, setLogCopied] = useState(false);
-  const logScrollRef = useRef<ScrollView>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  // Set once a running trip's own rate card has been adopted, so the initial load of the
+  // saved selection below can't overwrite it.
+  const adoptedCardAppliedRef = useRef(false);
   const [masterToggleError, setMasterToggleError] = useState<string | null>(null);
 
   const handleMasterToggle = async (online: boolean) => {
@@ -141,6 +140,7 @@ export default function TripScreen() {
     };
     checkPermission();
     getPreferredNavApp().then(setPreferredNavAppState);
+    getUseWazeEstimate().then(mirrorUseWazeEstimate);
 
     const appStateSubscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
@@ -153,12 +153,35 @@ export default function TripScreen() {
     };
   }, []);
 
-  // Needed for the mid-trip rate-card switch buttons (see
-  // handleSwitchRateCard) -- RateCardSection loads its own copy for the idle
-  // screen, but it doesn't render while tracking.isTracking is true.
+  // The rate card list feeds the mid-trip rate-card switch buttons (see
+  // handleSwitchRateCard); the saved selection and surge are what the idle
+  // fare breakdowns use now that RateCardSection only mounts inside Settings.
   useEffect(() => {
-    getRateCards().then(setRateCards);
+    Promise.all([getRateCards(), getSelectedRateCardId(), getSurgeMultiplier()]).then(
+      ([cards, selectedId, surge]) => {
+        setRateCards(cards);
+        if (adoptedCardAppliedRef.current) {
+          return;
+        }
+        setSurgeMultiplierState(surge);
+        const selected = cards.find(card => card.id === selectedId) ?? cards[0];
+        if (selected) {
+          setActiveRateCard(selected);
+        }
+      },
+    );
   }, []);
+
+  useEffect(() => {
+    if (!showSettings) {
+      return;
+    }
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeSettings();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [showSettings]);
 
   // Adopts a trip that's already running when this screen mounts/resumes --
   // only useNativeTripTracking (Android) ever sets these; useTripTracking
@@ -170,6 +193,7 @@ export default function TripScreen() {
     if (!tracking.adoptedRateCardId) {
       return;
     }
+    adoptedCardAppliedRef.current = true;
     if (tracking.adoptedSurgeMultiplier !== null) {
       setSurgeMultiplierState(tracking.adoptedSurgeMultiplier);
     }
@@ -251,26 +275,10 @@ export default function TripScreen() {
     tracking.stop();
   };
 
-  const handleRefreshDiagnosticLog = () => {
-    getDiagnosticLog().then(setDiagnosticLogText);
-  };
-
-  const handleToggleDiagnosticLog = () => {
-    if (!showDiagnosticLog) {
-      handleRefreshDiagnosticLog();
-    }
-    setShowDiagnosticLog(!showDiagnosticLog);
-  };
-
-  const handleClearDiagnosticLog = () => {
-    clearDiagnosticLog();
-    setDiagnosticLogText('');
-  };
-
-  const handleCopyDiagnosticLog = () => {
-    copyToClipboard(diagnosticLogText);
-    setLogCopied(true);
-    setTimeout(() => setLogCopied(false), 2000);
+  // Rate cards may have been edited in Settings, which the mid-trip switch buttons list.
+  const closeSettings = () => {
+    setShowSettings(false);
+    getRateCards().then(setRateCards);
   };
 
   // Switching mid-trip (not just before Start Trip) -- write-through to
@@ -306,6 +314,20 @@ export default function TripScreen() {
   const hasDailyEarnings = ttrsEarnings !== null || allridiEarnings !== null;
   const dailyEarningsTotal = (ttrsEarnings ?? 0) + (allridiEarnings ?? 0);
 
+  if (showSettings) {
+    return (
+      <SettingsScreen
+        onBack={closeSettings}
+        isTracking={tracking.isTracking}
+        accessibilityServiceEnabled={accessibilityServiceEnabled}
+        preferredNavApp={preferredNavApp}
+        onSelectNavApp={handleSelectNavApp}
+        onActiveRateCardChange={setActiveRateCard}
+        onSurgeMultiplierChange={setSurgeMultiplierState}
+      />
+    );
+  }
+
   if (showMapPicker) {
     return (
       <MapPickerScreen
@@ -324,6 +346,9 @@ export default function TripScreen() {
 
   return (
     <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.container}>
+      <Pressable style={styles.settingsButton} onPress={() => setShowSettings(true)} hitSlop={12}>
+        <Text style={styles.settingsButtonText}>Settings</Text>
+      </Pressable>
       <Text style={styles.title}>Fare Calculator</Text>
       {APP_VERSION && <Text style={styles.version}>v{APP_VERSION}</Text>}
 
@@ -390,84 +415,7 @@ export default function TripScreen() {
         </View>
       )}
 
-      {isOverlaySupported && accessibilityServiceEnabled && (
-        <View style={styles.diagnosticSection}>
-          <Pressable onPress={handleToggleDiagnosticLog}>
-            <Text style={styles.linkButtonText}>
-              {showDiagnosticLog ? 'Hide' : 'View'} Auto-Start Log
-            </Text>
-          </Pressable>
-          {showDiagnosticLog && (
-            <View style={styles.diagnosticLogBox}>
-              <ScrollView
-                ref={logScrollRef}
-                style={styles.diagnosticLogScroll}
-                nestedScrollEnabled
-                onContentSizeChange={() => logScrollRef.current?.scrollToEnd({animated: false})}>
-                <Text style={styles.diagnosticLogText}>
-                  {diagnosticLogText || 'No auto-start activity recorded yet.'}
-                </Text>
-              </ScrollView>
-              <View style={styles.diagnosticLogActions}>
-                <Pressable onPress={handleRefreshDiagnosticLog}>
-                  <Text style={styles.linkButtonText}>Refresh</Text>
-                </Pressable>
-                <Pressable
-                  onPress={handleCopyDiagnosticLog}
-                  disabled={!diagnosticLogText}>
-                  <Text style={styles.linkButtonText}>
-                    {logCopied ? 'Copied!' : 'Copy'}
-                  </Text>
-                </Pressable>
-                <Pressable onPress={handleClearDiagnosticLog}>
-                  <Text style={styles.linkButtonText}>Clear</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-        </View>
-      )}
-
       {isOverlaySupported && accessibilityServiceEnabled && <RequestAlertThresholdsSection />}
-
-      {!tracking.isTracking && (
-        <RateCardSection
-          onActiveRateCardChange={setActiveRateCard}
-          onSurgeMultiplierChange={setSurgeMultiplierState}
-        />
-      )}
-
-      {!tracking.isTracking && isOverlaySupported && (
-        <View style={styles.settingsSection}>
-          <Text style={styles.settingsLabel}>Relaunch navigation app</Text>
-          <View style={styles.navAppRow}>
-            <Pressable
-              style={[
-                styles.navAppOption,
-                preferredNavApp === NAV_APPS.WAZE && styles.navAppOptionSelected,
-              ]}
-              onPress={() => handleSelectNavApp(NAV_APPS.WAZE)}>
-              <Text style={styles.navAppOptionText}>Waze</Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.navAppOption,
-                preferredNavApp === NAV_APPS.GOOGLE_MAPS &&
-                  styles.navAppOptionSelected,
-              ]}
-              onPress={() => handleSelectNavApp(NAV_APPS.GOOGLE_MAPS)}>
-              <Text style={styles.navAppOptionText}>Google Maps</Text>
-            </Pressable>
-          </View>
-          <Pressable style={styles.linkButton} onPress={openDefaultAppSettings}>
-            <Text style={styles.linkButtonText}>
-              Set as default navigation handler
-            </Text>
-          </Pressable>
-        </View>
-      )}
-
-      {!tracking.isTracking && isOverlaySupported && <OverlaySizeSection />}
 
       {!tracking.isTracking && (
         <DestinationSearch
@@ -620,13 +568,19 @@ const createStyles = (colors: ThemeColors) =>
       fontSize: 13,
       fontWeight: '600',
     },
-    settingsSection: {
-      marginBottom: 16,
-    },
     settingsLabel: {
       fontSize: 13,
       color: colors.textSecondary,
       marginBottom: 6,
+    },
+    settingsButton: {
+      alignSelf: 'flex-end',
+      marginBottom: 8,
+    },
+    settingsButtonText: {
+      fontSize: 14,
+      color: colors.primary,
+      fontWeight: '600',
     },
     masterToggleSection: {
       marginBottom: 16,
@@ -663,14 +617,6 @@ const createStyles = (colors: ThemeColors) =>
       fontWeight: '600',
       color: colors.textPrimary,
     },
-    linkButton: {
-      alignSelf: 'flex-start',
-    },
-    linkButtonText: {
-      fontSize: 13,
-      color: colors.primary,
-      fontWeight: '600',
-    },
     mapPickerButton: {
       borderWidth: 1,
       borderColor: colors.primary,
@@ -683,30 +629,6 @@ const createStyles = (colors: ThemeColors) =>
       color: colors.primary,
       fontSize: 14,
       fontWeight: '600',
-    },
-    diagnosticSection: {
-      marginBottom: 16,
-    },
-    diagnosticLogBox: {
-      marginTop: 8,
-      borderWidth: 1,
-      borderColor: colors.borderSubtle,
-      borderRadius: 8,
-      padding: 8,
-      backgroundColor: colors.surface,
-    },
-    diagnosticLogScroll: {
-      maxHeight: 320,
-    },
-    diagnosticLogText: {
-      fontSize: 12,
-      fontFamily: 'monospace',
-      color: colors.textSecondary,
-    },
-    diagnosticLogActions: {
-      flexDirection: 'row',
-      gap: 16,
-      marginTop: 8,
     },
     destinationRow: {
       marginBottom: 16,

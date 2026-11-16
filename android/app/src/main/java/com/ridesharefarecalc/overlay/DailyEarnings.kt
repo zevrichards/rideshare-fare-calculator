@@ -16,6 +16,25 @@ object DailyEarnings {
     private const val PREFS_NAME = "fare_overlay_prefs"
     private const val KEY_PREFIX = "daily_earnings_"
 
+    // Both apps' Earnings screens already show take-home (e.g. a TT$39 TTRS ride moved the
+    // page from TT$72 to TT$103; a TT$53 Allridi ride showed as TT$45), whereas the fare on
+    // an end-of-ride screen is what the rider paid, before the platform's cut.
+    private val COMMISSION_RATES = mapOf(
+        "production.ttrides.driver" to 0.20,
+        "product.allridi.driver" to 0.15,
+    )
+
+    fun netOfCommission(packageName: String, grossFare: Double): Double =
+        grossFare * (1.0 - (COMMISSION_RATES[packageName] ?: 0.0))
+
+    // Adds a finished ride (after commission) to today's figure. The next time the driver
+    // opens that app's Earnings screen, record() replaces this with the app's own number.
+    fun addRide(context: Context, packageName: String, grossFare: Double): Double {
+        val total = (getToday(context, packageName) ?: 0.0) + netOfCommission(packageName, grossFare)
+        record(context, packageName, total)
+        return total
+    }
+
     private fun todayKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
     fun record(context: Context, packageName: String, amount: Double) {

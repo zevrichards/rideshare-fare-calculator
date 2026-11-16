@@ -18,6 +18,7 @@ object RateCardPreference {
     private const val KEY_SELECTED_RATE_CARD_ID = "selected_rate_card_id"
     private const val KEY_SURGE_MULTIPLIER = "surge_multiplier"
     private const val KEY_OVERLAY_SCALE = "overlay_scale"
+    private const val KEY_USE_WAZE_ESTIMATE = "use_waze_estimate"
     private const val KEY_FAR_REQUEST_THRESHOLD_KM = "far_request_threshold_km"
     private const val KEY_NEAR_REQUEST_THRESHOLD_KM = "near_request_threshold_km"
 
@@ -26,7 +27,7 @@ object RateCardPreference {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val json = prefs.getString(KEY_RATE_CARD_PREFIX + id, null) ?: return default
         return try {
-            RateCard.fromJson(JSONObject(json))
+            RateCard.withCorrections(RateCard.fromJson(JSONObject(json)))
         } catch (_: Exception) {
             default
         }
@@ -63,6 +64,19 @@ object RateCardPreference {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putFloat(KEY_SURGE_MULTIPLIER, value.toFloat())
+            .apply()
+    }
+
+    // When on, trips take their time/distance estimate from Waze's screen (refreshed about
+    // once a minute while Waze is showing) instead of the Places/Routes API lookup.
+    fun getUseWazeEstimate(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_USE_WAZE_ESTIMATE, false)
+
+    fun setUseWazeEstimate(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_USE_WAZE_ESTIMATE, value)
             .apply()
     }
 
